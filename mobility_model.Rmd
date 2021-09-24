@@ -9,10 +9,10 @@ library(tidyverse)
 library(lubridate)
 
 #Load Movements data
-files<-list.files("./movements_facebook/",full.names = T)
+files<-list.files("~/itinerant/movements_facebook/",full.names = T)
 movements<-files %>% purrr::map_dfr(~ read_csv(.x, col_types = cols(date_time = col_character())))
 #Load Population
-files_p<-list.files("./population_facebook/",full.names = T)
+files_p<-list.files("~/itinerant/population_facebook/",full.names = T)
 population<-files_p %>% purrr::map_dfr(~ read_csv(.x, col_types = cols(date_time = col_character()))) %>%
   mutate(
     hour=substr(date_time,nchar(date_time)-5,nchar(date_time)-3),
@@ -24,7 +24,7 @@ population<-files_p %>% purrr::map_dfr(~ read_csv(.x, col_types = cols(date_time
   group_by(wday,hour,quadkey) %>%
   dplyr::summarise(n_pop=sum(n_crisis,na.rm=T))
 
-grid<-st_read("grid_GLA.gpkg") 
+grid<-st_read("~/itinerant/grid_GLA.gpkg") 
 #add quadkey att
 quadkey_centroid<-unique(movements[c("start_lon","start_lat","start_quadkey")]) %>%
   st_as_sf(coords = c("start_lon", "start_lat"), crs = 4326) %>%
@@ -33,7 +33,7 @@ quadkey_centroid<-unique(movements[c("start_lon","start_lat","start_quadkey")]) 
     quadkey=start_quadkey
   )
 grid<-st_join(grid, quadkey_centroid,join=st_intersects)
-grid_F<-st_read("./FB_GRID_CLUSTERNAMES.geojson")
+grid_F<-st_read("~/itinerant/FB_GRID_CLUSTERNAMES.geojson")
 grid<-inner_join(grid,st_drop_geometry(grid_F[c("id","clusters")]),by=c("id"="id"))
 ```
 ### Movements within GLA
@@ -43,10 +43,11 @@ movementsGLA<-movements %>%
   filter(start_quadkey %in% grid$quadkey & end_quadkey %in% grid$quadkey) %>%
   mutate(
     hour=substr(date_time,nchar(date_time)-5,nchar(date_time)-3),
+    monthDay=(format(as.Date(date_time), "%d-%m")),
     wday=wday(date_time,label = T),
     wd=ifelse(wday=="Sun"|wday=="Sat","Weekend","Weekday"),
     wd=ifelse(date_time=="2021-08-30 00:00" | date_time=="2021-08-30 08:00" | date_time=="2021-08-30 16:00", "Weekend", wd))%>%
-  select(start_quadkey,end_quadkey,start_lat,start_lon,end_lat,end_lon,hour,wday,wd,n_crisis) %>%
+  select(start_quadkey,end_quadkey,start_lat,start_lon,end_lat,end_lon,hour,wday,wd,monthDay,n_crisis) %>%
   rename(n_movements=n_crisis) %>%
   inner_join(population[c("quadkey","n_pop","hour","wday")],by=c("start_quadkey"="quadkey","hour"="hour","wday"="wday"))%>%
   rename(start_pop=n_pop)%>%
@@ -60,32 +61,74 @@ movementsGLA$dist<-dist
 remove(start,end,dist)
 
 movementsGLA<-movementsGLA %>%
-  inner_join(grid[c("quadkey","clusters")],by=c("start_quadkey"="quadkey")) %>%
+  inner_join(st_drop_geometry(grid[c("quadkey","clusters")]),by=c("start_quadkey"="quadkey")) %>%
   rename(start_cluster=clusters) %>%
-  inner_join(grid[c("quadkey","clusters")],by=c("end_quadkey"="quadkey")) %>%
+  inner_join(st_drop_geometry(grid[c("quadkey","clusters")]),by=c("end_quadkey"="quadkey")) %>%
   rename(end_cluster=clusters)
 
 movementsGLA<-movementsGLA[!is.na(movementsGLA$n_movements),]
 movementsGLA$n_movements<-as.integer(movementsGLA$n_movements)
-movementsGLA_individuals<-movementsGLA %>%
-   uncount(n_movements)
- movementsGLA_individuals$id<-seq(1:nrow(movementsGLA_individuals))
- 
-
 
 ```
 ### Multinomial logistic regression
 
 ```{r}
-library(mlogit)
+library(mnlogit)
+###doesn't work :) needs to be reformulated as to deal with aggregated data
+
+movementsGLA_individuals<-movementsGLA %>%
+  uncount(n_movements)
+movementsGLA_individuals$id<-seq(1:nrow(movementsGLA_individuals))
  movementsGLA_individuals$mov<-as.factor(paste0(movementsGLA_individuals$start_quadkey,movementsGLA_individuals$end_quadkey))
  
  movementsGLA_individuals$func<-as.factor(paste0(movementsGLA_individuals$start_cluster,movementsGLA_individuals$end_cluster))
  
- ml_data<-mlogit.data(movementsGLA_individuals,choice = "func",shape = "wide")
+ ml_data<-mlogit::mlogit.data(movementsGLA_individuals,choice = "func",shape = "wide")
 
 
 ```
+### Markow Chains
+
+```{r}
+library(markovchain)
+
+####example of weekdays at 8
+cluster<-unique(movementsGLA$start_cluster)
+tot_by_cluster<-movementsGLA %>%
+  filter(wd=="Weekday" & hour==" 08") %>%
+  group_by(end_cluster)%>%
+  summarise(tot_movements=sum(n_movements,na.rm = T))
+  
+movementsGLA_m_WD08<-movementsGLA %>%
+  filter(wd=="Weekday" & hour==" 08") %>%
+  group_by(start_cluster,end_cluster)%>%
+  dplyr::summarise(n_movements=sum(n_movements, na.rm=T))%>%
+  inner_join(tot_by_cluster,by=c("end_cluster"="end_cluster"))%>%
+  mutate(prob=n_movements/tot_movements)
+
+transition_M<-matrix(movementsGLA_m_WD08$prob,nrow = 8,byrow = T)
+transition_M<-matrix(transition_M,nrow=8,byrow=T,dimname=list(cluster, cluster)) #this can be function to function
+MC<-new("markovchain",states= tiles,byrow=T,transitionMatrix=transition_M,name="movements")
+ST<-steadyStates(MC)
+```
+
+### Spatial Interaction Model
+
+```{r}
+
+movementGLA_SI<-movementsGLA %>%
+  select(start_cluster,end_cluster,n_movements,dist,start_pop,end_pop,wd,monthDay)%>%
+  mutate(dummy=1,
+         id=seq(1:nrow(movementsGLA))) %>%
+  pivot_wider(id_cols = c("n_movements","dist","start_pop","end_pop","wd","monthDay"),
+              names_from = ends_with("cluster"),values_from = "dummy")
+
+movementGLA_SI[is.na(movementGLA_SI)] = 0
+
+lm(formula=log(n_movements)+0.001~dist+`Suburban/commuters_Towns/Discontinuous urban fabrics`+`Industrial and manufacturing_Urban residential and other work`, movementGLA_SI)
+
+```
+
 
 
 
