@@ -1,0 +1,180 @@
+---
+title: "Mobility Indicators"
+output: html_notebook
+---
+
+# Exploring Facebook mobility data
+
+```{r}
+library(sf)
+library(tidyverse)
+library(lubridate)
+library(tmap)
+library(ggplot2)
+library(ggpubr)
+#Load Movements data
+files<-list.files("./movements_facebook/",full.names = T)
+movements<-files %>% purrr::map_dfr(~ read_csv(.x, col_types = cols(date_time = col_character())))
+#Load Population
+files_p<-list.files("./population_facebook/",full.names = T)
+population<-files_p %>% purrr::map_dfr(~ read_csv(.x, col_types = cols(date_time = col_character()))) %>%
+  mutate(
+    hour=substr(date_time,nchar(date_time)-5,nchar(date_time)-3),
+    wday=wday(date_time,label = T),
+    wd=ifelse(wday=="Sun"|wday=="Sat","Weekend","Weekday"),
+    wd=ifelse(date_time=="2021-08-30 00:00" | date_time=="2021-08-30 08:00" | date_time=="2021-08-30 16:00", "Weekend", wd)
+  )
+
+#Load grid to filter OD within GLA
+grid<-st_read("grid_GLA.gpkg") 
+#add quadkey att
+quadkey_centroid<-unique(movements[c("start_lon","start_lat","start_quadkey")]) %>%
+  st_as_sf(coords = c("start_lon", "start_lat"), crs = 4326) %>%
+  st_transform(27700) %>%
+  rename(
+    quadkey=start_quadkey
+  )
+grid<-st_join(grid, quadkey_centroid,join=st_intersects)
+```
+
+## Pre-processing [23th August 00:00 to 4th September 16:00]
+
+```{r}
+movements_agg<-movements %>%
+  mutate(
+    hour=substr(date_time,nchar(date_time)-5,nchar(date_time)-3),
+    wday=wday(date_time,label = T),
+    wd=ifelse(wday=="Sun"|wday=="Sat","Weekend","Weekday"),
+    wd=ifelse(date_time=="2021-08-30 00:00" | date_time=="2021-08-30 08:00" | date_time=="2021-08-30 16:00", "Weekend", wd)
+  ) %>%
+  group_by(wday,wd,hour,start_quadkey,end_quadkey,start_lat,start_lon,end_lat,end_lon,geometry) %>%
+  dplyr::summarise(n=sum(n_crisis,na.rm=T)) 
+
+population_agg<-population %>%
+  mutate(quadkey=substr(quadkey,0,nchar(quadkey)-1))%>%
+  filter(quadkey %in% grid$quadkey) %>%
+  group_by(wd,hour,quadkey) %>%
+  dplyr::summarise(n_pop=sum(n_crisis,na.rm=T))
+  
+```
+
+## Mobility Indicators
+
+### Intra-mobility
+
+```{r}
+intramobility<-movements_agg %>%
+  filter(start_quadkey %in% grid$quadkey) %>% 
+  mutate(
+    within=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)
+    ) %>%
+  filter(within==TRUE) %>%
+  group_by(hour,wd,start_quadkey,end_quadkey)%>%
+  dplyr::summarise(intra=sum(n,na.rm = T)) %>%
+  mutate(intra_avg = ifelse(wd=="Weekdays", intra/9, intra/4))
+```
+
+### In-flows/Out-flows
+
+```{r}
+inflows<-movements_agg %>%
+  filter(end_quadkey %in% grid$quadkey)%>%
+  mutate(
+    within=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)
+    ) %>%
+  filter(within==FALSE)%>%
+  group_by(hour,wd,end_quadkey)%>%
+  partition(c)%>%
+  dplyr::summarise(inF=sum(n,na.rm = T)) %>%
+  collect() %>%
+  mutate(inflows_avg = ifelse(wd=="Weekdays", inF/9, inF/4))
+
+outflows<-movements_agg %>%
+  filter(start_quadkey %in% grid$quadkey) %>%
+  mutate(
+    within=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)
+    ) %>%
+  filter(within==FALSE) %>%
+  group_by(hour,wd,start_quadkey)%>%
+  partition(c)%>%
+  dplyr::summarise(outF=sum(n,na.rm = T)) %>%
+  collect() %>%
+  mutate(outF_avg = ifelse(wd=="Weekdays", outF/9, outF/4))
+
+```
+
+### Distance Travelled
+
+```{r}
+###inflow distance
+indistance<-movements_agg %>%
+  filter(end_quadkey %in% grid$quadkey)%>%
+  mutate(
+    within=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)
+    ) %>%
+  filter(within==FALSE) 
+
+start<-st_as_sf(indistance,coords = c("start_lon", "start_lat"), crs = 4326)
+end<-st_as_sf(indistance,coords = c("end_lon", "end_lat"), crs = 4326)
+dist<-st_distance(start,end,by_element = T)
+indistance$inDist<-dist
+
+indistance<-indistance %>%
+  group_by(hour,wd,end_quadkey)%>%
+  partition(c)%>%
+  dplyr::summarise(inDistAvg=mean(inDist,na.rm = T),
+                   inDistMedian=median(inDist,na.rm = T),
+                   inDistStD=sd(inDist,na.rm=T)) %>%
+  collect() 
+
+outdistance<-movements_agg %>%
+  filter(start_quadkey %in% grid$quadkey)%>%
+  mutate(
+    within=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)
+    ) %>%
+  filter(within==FALSE) 
+
+start<-st_as_sf(outdistance,coords = c("start_lon", "start_lat"), crs = 4326)
+end<-st_as_sf(outdistance,coords = c("end_lon", "end_lat"), crs = 4326)
+dist<-st_distance(start,end,by_element = T)
+outdistance$outDist<-dist
+
+outdistance<-outdistance %>%
+  group_by(hour,wd,start_quadkey)%>%
+  partition(c)%>%
+  dplyr::summarise(outDistAvg=mean(outDist,na.rm = T),
+                   outDistMedian=median(outDist,na.rm = T),
+                   outDistStD=sd(outDist,na.rm=T)) %>%
+  collect() 
+  
+```
+
+## Create a unique data frame with all metrics
+
+```{r}
+mobility_indicators<-grid %>%
+  select(quadkey,geom)%>%
+  inner_join(st_drop_geometry(intramobility),by=c("quadkey"="start_quadkey")) %>%
+  select(-end_quadkey) %>%
+  inner_join(inflows,by=c("quadkey"="end_quadkey","hour"="hour","wd"="wd")) %>%
+  inner_join(outflows,by=c("quadkey"="start_quadkey","hour"="hour","wd"="wd")) %>%
+  inner_join(indistance,by=c("quadkey"="end_quadkey","hour"="hour","wd"="wd")) %>%
+  inner_join(outdistance,by=c("quadkey"="start_quadkey","hour"="hour","wd"="wd")) %>%
+  inner_join(population_agg,by=c("quadkey"="quadkey","hour"="hour","wd"="wd"))%>%
+  mutate(
+    netF=inF-outF,
+    hour_wd=paste0(hour,"_",wd)
+         )
+remove(list=setdiff(ls(), "mobility_indicators"))
+col<-colnames(st_drop_geometry(mobility_indicators[c(4:16,18)]))
+mobility_indicators_wide<- mobility_indicators %>%
+  st_drop_geometry() %>%
+  select(-hour & -wd) %>%
+  tidyr::pivot_wider(id_cols = quadkey,names_from = hour_wd,values_from = col)
+
+remove(list=setdiff(ls(), c("mobility_indicators","mobility_indicators_wide"))) 
+
+summary(mobility_indicators_wide)
+```
+
+## Clustering?
