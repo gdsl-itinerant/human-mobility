@@ -1,6 +1,6 @@
 # human-mobility
 
-This is an initial exploration of FB data aimed at:
+This is an initial exploration of FB data aimed to:
 
 1 . Compute metrics to characterise mobility
 
