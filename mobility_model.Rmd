@@ -7,6 +7,8 @@ output: html_notebook
 library(sf)
 library(tidyverse)
 library(lubridate)
+library(ggplot2)
+library(ggpubr)
 
 #Load Movements data
 files<-list.files("~/itinerant/movements_facebook/",full.names = T)
@@ -70,7 +72,7 @@ movementsGLA<-movementsGLA[!is.na(movementsGLA$n_movements),]
 movementsGLA$n_movements<-as.integer(movementsGLA$n_movements)
 
 ```
-### Multinomial logistic regression
+### Multinomial logistic regression (does not work)
 
 ```{r}
 library(mnlogit)
@@ -87,6 +89,30 @@ movementsGLA_individuals$id<-seq(1:nrow(movementsGLA_individuals))
 
 
 ```
+### Multinomial Logistic Regression (aggregate data)
+
+```{r}
+
+movementsGLA_model<-movementsGLA %>%
+  mutate(prob_mov=n_movements/start_pop,
+         clusterPair=paste0(start_cluster,"_",end_cluster),
+         across(where(is.numeric),scale)) 
+
+#eq <- prob_mov ~ start_cluster:end_cluster + dist #removed to facilitate prediction
+eq <- prob_mov ~ clusterPair + dist 
+m <- glm(eq,
+          data=movementsGLA,
+          weights = start_pop, 
+          family = binomial("logit"))
+
+summary(m)
+
+clusters_interaction <- data.frame(clusterPair = unique(movementsGLA$clusterPair))
+clusters_interaction$dist<-mean(movementsGLA$dist)
+clusters_interaction$probs<-predict(m, newdata = clusters_interaction, "response")
+
+```
+
 ### Markow Chains
 
 ```{r}
@@ -94,17 +120,44 @@ library(markovchain)
 
 ####example of weekdays at 8
 cluster<-unique(movementsGLA$start_cluster)
-tot_by_cluster<-movementsGLA %>%
-  filter(wd=="Weekday" & hour==" 08") %>%
-  group_by(end_cluster)%>%
-  summarise(tot_movements=sum(n_movements,na.rm = T))
-  
-movementsGLA_m_WD08<-movementsGLA %>%
-  filter(wd=="Weekday" & hour==" 08") %>%
-  group_by(start_cluster,end_cluster)%>%
-  dplyr::summarise(n_movements=sum(n_movements, na.rm=T))%>%
-  inner_join(tot_by_cluster,by=c("end_cluster"="end_cluster"))%>%
-  mutate(prob=n_movements/tot_movements)
+
+code<-LETTERS[seq( from = 1, to = 8 )]
+
+cluster_code<-data.frame(cluster,code)
+
+####looping across time and day of week
+week<-c("Weekday","Weekend")
+time<-c(" 00"," 08"," 16")
+i=0
+plots<-list()
+
+for(w in week){
+  for(t in time){
+    i=i+1
+    tot_by_cluster<-movementsGLA %>%
+      filter(wd==w & hour==t) %>%
+      group_by(end_cluster)%>%
+      summarise(tot_movements=sum(n_movements,na.rm = T))
+    m<-movementsGLA %>%
+          filter(wd==w & hour==t) %>%
+          group_by(start_cluster,end_cluster)%>%
+          dplyr::summarise(n_movements=sum(n_movements, na.rm=T))%>%
+          inner_join(tot_by_cluster,by=c("end_cluster"="end_cluster"))%>%
+          mutate(prob=n_movements/tot_movements) %>%
+          inner_join(cluster_code,by=c("start_cluster"="cluster"))%>%
+          rename(start_code=code)%>%
+          inner_join(cluster_code,by=c("end_cluster"="cluster"))%>%
+          rename(end_code=code)
+    p<-ggplot(m,aes(x=start_code,y=end_code,fill=prob)) +
+            geom_tile() +
+            theme_bw()
+    plots[[i]]<-p
+  }
+}
+
+P<-ggarrange(plots[[1]],plots[[2]],plots[[3]],plots[[4]],plots[[5]],plots[[6]],labels=c("WD 00","WD 08","WD 16","WE 00","WE 08","WE 16"),nrow = 2,ncol = 3,hjust = 0.1,font.label = list(size=11))
+
+ggsave("/home/alessia/itinerant/img/transitions.jpg",P,units = "cm",width = 30,height = 15)
 
 transition_M<-matrix(movementsGLA_m_WD08$prob,nrow = 8,byrow = T)
 transition_M<-matrix(transition_M,nrow=8,byrow=T,dimname=list(cluster, cluster)) #this can be function to function
