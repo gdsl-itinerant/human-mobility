@@ -89,27 +89,33 @@ movementsGLA_individuals$id<-seq(1:nrow(movementsGLA_individuals))
 
 
 ```
-### Multinomial Logistic Regression (aggregate data)
+### Binomial Logistic Regression (aggregate data)
 
 ```{r}
 
-movementsGLA_model<-movementsGLA %>%
-  mutate(prob_mov=n_movements/start_pop,
-         clusterPair=paste0(start_cluster,"_",end_cluster),
-         across(where(is.numeric),scale)) 
+scale_2sd<-function(x){(x - mean(x)) / 2*sd(x)}
 
-#eq <- prob_mov ~ start_cluster:end_cluster + dist #removed to facilitate prediction
-eq <- prob_mov ~ clusterPair + dist 
-m <- glm(eq,
-          data=movementsGLA,
-          weights = start_pop, 
+movementsGLA_model<-movementsGLA %>%
+  mutate(prop_mov=n_movements/start_pop,
+         clusterPair=paste0(start_cluster,"_",end_cluster),
+         across(.cols = c("start_pop","end_pop","dist"),scale_2sd))
+
+eq1 <- prop_mov ~ clusterPair + start_pop + end_pop + dist  
+m1 <- glm(eq1,
+          data=movementsGLA_model,
+          weights = movementsGLA$start_pop, 
           family = binomial("logit"))
 
-summary(m)
+summary(m1)
 
-clusters_interaction <- data.frame(clusterPair = unique(movementsGLA$clusterPair))
-clusters_interaction$dist<-mean(movementsGLA$dist)
-clusters_interaction$probs<-predict(m, newdata = clusters_interaction, "response")
+clusters_interaction <- data.frame(clusterPair = unique(movementsGLA_model$clusterPair))
+clusters_interaction<-clusters_interaction %>%
+  mutate(
+    dist=mean(movementsGLA$dist),
+    start_pop=mean(movementsGLA$start_pop),
+    end_pop=mean(movementsGLA$end_pop))
+clusters_interaction$probs<-predict(m1, newdata = clusters_interaction, "response")
+
 
 ```
 
@@ -118,7 +124,6 @@ clusters_interaction$probs<-predict(m, newdata = clusters_interaction, "response
 ```{r}
 library(markovchain)
 
-####example of weekdays at 8
 cluster<-unique(movementsGLA$start_cluster)
 
 code<-LETTERS[seq( from = 1, to = 8 )]
