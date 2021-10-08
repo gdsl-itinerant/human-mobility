@@ -98,7 +98,16 @@ scale_2sd<-function(x){(x - mean(x)) / 2*sd(x)}
 movementsGLA_model<-movementsGLA %>%
   mutate(prop_mov=n_movements/start_pop,
          clusterPair=paste0(start_cluster,"_",end_cluster),
+         clusterPairTime=paste0(clusterPair,"_",wd,"_",hour),
          across(.cols = c("start_pop","end_pop","dist"),scale_2sd))
+
+eq <- prop_mov ~ start_cluster:end_cluster + start_pop + end_pop + dist 
+m <- glm(eq,
+          data=movementsGLA_model,
+          weights = movementsGLA$start_pop, 
+          family = binomial("logit"))
+
+summary(m)
 
 eq1 <- prop_mov ~ clusterPair + start_pop + end_pop + dist  
 m1 <- glm(eq1,
@@ -117,7 +126,79 @@ clusters_interaction<-clusters_interaction %>%
 clusters_interaction$probs<-predict(m1, newdata = clusters_interaction, "response")
 
 
+eq3 <- prop_mov ~ clusterPairTime + start_pop + end_pop + dist
+
+m3 <- glm(eq3,
+          data=movementsGLA_model,
+          weights = movementsGLA$start_pop, 
+          family = binomial("logit"))
+
+summary(m3)
+clusters_interaction_time <- data.frame(clusterPairTime = unique(movementsGLA_model$clusterPairTime))
+clusters_interaction_time<-clusters_interaction_time %>%
+  mutate(
+    dist=mean(movementsGLA$dist),
+    start_pop=mean(movementsGLA$start_pop),
+    end_pop=mean(movementsGLA$end_pop))
+clusters_interaction_time$probs<-plogis(predict(m4, newdata = clusters_interaction_time, "response"))
+clusters_interaction_time$lodds<-predict(m4, newdata = clusters_interaction_time, "response")
+
+clusters_interaction_time<-clusters_interaction_time %>%
+  separate(clusterPairTime,sep="_",c("start","end","wd","hour"))%>%
+  inner_join(cluster_code,by=c("start"="cluster"))%>%
+  rename(start_code=code)%>%
+  inner_join(cluster_code,by=c("end"="cluster"))%>%
+  rename(end_code=code)
+  
+
+ggplot(clusters_interaction_time, aes(x=start_code,y=end_code,fill=probs))+
+  geom_tile()+
+  facet_wrap(~ wd + hour)
+
+
+
+m4 <- glm(eq4,
+          data=movementsGLA_model,
+          weights = movementsGLA$start_pop, 
+          family = binomial("logit"))
+
+
+
 ```
+### Multilevel models with random effect
+
+```{r}
+library(lme4)
+library(merTools)
+
+movementsGLA_model<-movementsGLA %>%
+  mutate(prop_mov=n_movements/start_pop,
+         clusterPair=paste0(start_cluster,"_",end_cluster),
+         clusterPairTime=paste0(clusterPair,"_",wd,"_",hour),
+         across(.cols = c("start_pop","end_pop","dist"),scale)) ###it does not like the 2sd scaling
+
+eq4<-prop_mov ~ (1 | start_quadkey) + clusterPair + start_pop + end_pop + dist
+m4 <- lmer(eq4, data = movementsGLA_model)
+plotREsim(REsim(m4))
+summary(m4)
+
+eq5<-prop_mov ~ (1 | clusterPair) + start_pop + end_pop + dist
+m5 <- lmer(eq5, data = movementsGLA_model)
+plotREsim(REsim(m5))
+summary(m5)
+
+re_m5 <- REsim(m5) %>% filter(groupFctr == "clusterPair") 
+
+eq6<-prop_mov ~  hour + (1 + hour | clusterPair) + start_pop + end_pop + dist
+m6 <- lmer(eq6, data = movementsGLA_model) 
+plotREsim(REsim(m6))
+summary(m6)
+
+
+
+```
+
+
 
 ### Markow Chains
 
