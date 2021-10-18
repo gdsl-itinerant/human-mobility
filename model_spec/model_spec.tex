@@ -1,0 +1,122 @@
+\RequirePackage[l2tabu,orthodox]{nag}
+\documentclass[11pt,letterpaper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{crimson}
+\usepackage{helvet}
+\usepackage[strict,autostyle]{csquotes}
+\usepackage[USenglish]{babel}
+\usepackage{microtype}
+\usepackage{authblk}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{endnotes}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{rotating}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{url}
+\usepackage{amssymb,amsmath}
+
+% location of figure files, via graphicx package
+\graphicspath{{./figures/}}
+
+% configure the page layout, via geometry package
+\geometry{
+	paper=letterpaper,
+	top=4cm,
+	bottom=4cm,
+	left=4cm,
+	right=4cm}
+\setstretch{1.02}
+\clubpenalty=10000
+\widowpenalty=10000
+
+% set section/subsection headings as the sans serif font
+\titleformat{\section}{\normalfont\sffamily\large\bfseries}{\thesection.}{0.3em}{}
+\titleformat{\subsection}{\normalfont\sffamily\small\bfseries}{\thesubsection.}{0.3em}{}
+
+% make figure/table captions sans-serif small font
+\captionsetup{font={footnotesize,sf},labelfont=bf,labelsep=period}
+
+% configure pdf metadata and link handling
+\hypersetup{
+	pdfauthor={Francisco Rowe},
+	pdftitle={xxx},
+	pdfsubject={xxx},
+	pdfkeywords={xxx},
+	pdffitwindow=true,
+	breaklinks=true,
+	colorlinks=false,
+	pdfborder={0 0 0}}
+
+\title{ \footnote{\textbf{Citation}: Rowe, F. 2021. xxx.}}
+
+\author[1]{Francisco Rowe \thanks{\textit{Corresponding author}: F.Rowe-Gonzalez@liverpool.ac.uk}}
+\author[2]{xxx}
+
+\affil[1]{Geographic Data Science Lab, Department of Geography and Planning, University of Liverpool, Liverpool, United Kingdom}
+\affil[2]{xxx}
+
+\date{}
+
+\begin{document}
+
+\maketitle
+
+
+\newpage
+
+\section*{Model Specification}
+
+This note seeks to document the model specification we would ideally like to estimate and its key components and reference terms. 
+
+\begin{equation}\label{m1}
+  \begin{split}
+&p_{ijt} = \alpha_{ij} + \gamma_{t} + FB_{ijt} + \varepsilon_{ijt} \\
+&\alpha_{ij} = \alpha_{i} + \alpha_{j} + \beta_{1}d_{ij} + \beta_{2}c_{ij} + u_{ij} \\
+&\alpha_{i} = \delta_{i} + \delta_{i1}pop_{i}  + F_{i} + u_{i} \\
+&\alpha_{j} = \delta_{j} + \delta_{j1}pop_{j}  + F_{j} + u_{j} \\
+&\gamma_{t} = \delta_{t} + \delta_{t1}day +  \delta_{t2}ti + \delta_{t3}w  + u_{t} \\
+&FB_{ijt} = fb_{0} +  fb_{ijt}z_{ijt} + fb_{ijt}au_{ijt} + u_{ijt} \\
+  \end{split}
+\end{equation}
+
+$p_{ijt}$: proportion of people moving from tile $i$ to tile $j$ at time $t$;\\
+$\alpha_{ij}$: component relating to tiles of origin $i$ and destionation $j$;\\
+$\gamma_{t}$: component relating to temporal variation;\\
+$FB_{ijt}$: component relating to variation in Facebook data quality;\\
+$\alpha_{i}$: factors relating to tiles of origin $i$;\\
+$\alpha_{j}$: factors relating to tiles of origin $j$;\\
+$\beta_{1}$: coefficient capturing the deterring effect of distance $d_{ij}$;\\
+$\beta_{2}$: coefficient capturing the variation in mobility intensity across tiles in different functional areas $c_{ij}$;\\
+$\delta_{i}$: average level of mobility related to tiles of origin $i$;\\
+$\delta_{i1}$: coefficient capturing the relationship between mobility intensity and population at origin tile $pop_{i}$;\\
+$F_{i}$: coefficient capturing the relationship between mobility intensity and additional attributes at origin $i$ eg. unemployment, housing affordability, etc.\\ 
+$\delta_{j}$: average level of mobility related to tiles of destination $j$;\\
+$\delta_{j1}$: coefficient capturing the relationship between mobility intensity and population at destination tile $pop_{j}$;\\
+$F_{j}$: coefficient capturing the relationship between mobility intensity and additional attributes at destination $j$ eg. unemployment, housing affordability, etc.\\ 
+$\delta_{t}$: average level of mobility related to time;\\
+$\delta_{t1}$: coefficient capturing the daily $day$ variability in mobility;\\
+$\delta_{t2}$: coefficient capturing the variability in mobility according to the 8 hour time interval $ti$ in which the Facebook data are organised; that is, 0am, 8am and 4pm;\\
+$\delta_{t3}w$: coefficient capturing the variability in mobility during week days and weekends $w$;\\
+$\varepsilon$ and $u$ correspond to the error terms;
+
+\section*{Estimation}
+
+The plan is to estimate Equation~\ref{m1} in a fractional regression framework \citep[see][]{papke1996econometric}. 
+In this framework errors are assumed to follow a logistic distribution and quasi maximum likelihood procedure is used to estimate the set of regression coefficients.
+The variable identifying pair combinations of functional areas for tiles of origin and destination (i.e. $c_{ij}$) can enter the model as a dummy variable or as a random effect in a multilevel framework.
+Time can also be modelled in different ways (i.e. including autoregresive terms of $p_{ijt}$, autoregresive terms of errors and splines) and there may be different components which may need to be taken into consideration (i.e. seasonability and autocorrelation)
+
+\newpage
+
+% print the bibliography
+\setlength{\bibsep}{0.00cm plus 0.05cm} % no space between items
+\bibliographystyle{apalike}
+\bibliography{itinerant_model}
+
+\end{document}
