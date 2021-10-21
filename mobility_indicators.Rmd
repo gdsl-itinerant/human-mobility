@@ -9,53 +9,76 @@ output: html_notebook
 library(sf)
 library(tidyverse)
 library(lubridate)
-library(tmap)
 library(ggplot2)
 library(ggpubr)
-#Load Movements data
-files<-list.files("./movements_facebook/",full.names = T)
-movements<-files %>% purrr::map_dfr(~ read_csv(.x, col_types = cols(date_time = col_character())))
-#Load Population
-files_p<-list.files("./population_facebook/",full.names = T)
-population<-files_p %>% purrr::map_dfr(~ read_csv(.x, col_types = cols(date_time = col_character()))) %>%
-  mutate(
-    hour=substr(date_time,nchar(date_time)-5,nchar(date_time)-3),
-    wday=wday(date_time,label = T),
-    wd=ifelse(wday=="Sun"|wday=="Sat","Weekend","Weekday"),
-    wd=ifelse(date_time=="2021-08-30 00:00" | date_time=="2021-08-30 08:00" | date_time=="2021-08-30 16:00", "Weekend", wd)
-  )
 
-#Load grid to filter OD within GLA
-grid<-st_read("grid_GLA.gpkg") 
-#add quadkey att
-quadkey_centroid<-unique(movements[c("start_lon","start_lat","start_quadkey")]) %>%
-  st_as_sf(coords = c("start_lon", "start_lat"), crs = 4326) %>%
-  st_transform(27700) %>%
-  rename(
-    quadkey=start_quadkey
-  )
-grid<-st_join(grid, quadkey_centroid,join=st_intersects)
+#Load Movements data
+files<-list.files("~/itinerant/facebook_allBritain/movements/july-august-2021/",full.names = T)
+files<-append(files,list.files("~/itinerant/facebook_allBritain/movements/march-april-2020/",full.names = T))
+movements<-files %>% purrr::map_dfr(~ read_csv(.x, col_types = cols(date_time = col_character(),start_quadkey= col_character(),end_quadkey= col_character())))
+
+
+#Grid centroids
+# grid_centroids<-movements %>%
+#   select(start_lat,start_lon,start_quadkey) %>%
+#   unique()
+# 
+# grid_centroids<-st_as_sf(grid_centroids, coords = c("start_lon", "start_lat"), crs = 4326)
+# st_write(grid_centroids,"~/itinerant/facebook_allBritain/grid/grid_centroids.shp")
+
+
+#Load Population
+files_p<-list.files("~/itinerant/facebook_allBritain/population/july-august-2021/",full.names = T)
+files_p<-append(files_p,list.files("~/itinerant/facebook_allBritain/population/march-april-2020/",full.names = T))
+population<-files_p %>% purrr::map_dfr(~ read_csv(.x, col_types = cols(date_time = col_character(),quadkey= col_character()))) 
+
+#Load Grid
+grid<-st_read("~/itinerant/grid_final/FBgridPop.shp")
+grid<-grid %>%
+  select(Popultn,label,quadkey)
+
 ```
 
-## Pre-processing [23th August 00:00 to 4th September 16:00]
+## Pre-processing [3 time interval - 1 month after lockdown (March 23th), 1 month after "freedom day" (July 19th), 1 month after school start (September 6th)]
 
 ```{r}
-movements_agg<-movements %>%
+#pre-process and group movements and pop by time interval
+
+movements<-movements %>%
   mutate(
     hour=substr(date_time,nchar(date_time)-5,nchar(date_time)-3),
+    date=as.Date(strftime(date_time, "%Y-%m-%d", tz="GMT")),
     wday=wday(date_time,label = T),
     wd=ifelse(wday=="Sun"|wday=="Sat","Weekend","Weekday"),
-    wd=ifelse(date_time=="2021-08-30 00:00" | date_time=="2021-08-30 08:00" | date_time=="2021-08-30 16:00", "Weekend", wd)
-  ) %>%
-  group_by(wday,wd,hour,start_quadkey,end_quadkey,start_lat,start_lon,end_lat,end_lon,geometry) %>%
+    time_interval=case_when(
+      date >= "2021-07-19" & date <"2021-09-06" ~ 2,
+      date < "2021-07-19" ~ 1
+    )
+  )
+
+population<-population %>%
+  mutate(
+    hour=substr(date_time,nchar(date_time)-5,nchar(date_time)-3),
+    date=as.Date(strftime(date_time, "%Y-%m-%d", tz="GMT")),
+    wday=wday(date_time,label = T),
+    wd=ifelse(wday=="Sun"|wday=="Sat","Weekend","Weekday"),
+    time_interval=case_when(
+      date >= "2021-07-19" & date <"2021-09-06" ~ 2,
+      date < "2021-07-19" ~ 1
+    )
+  )
+
+movements_agg<-movements %>%
+  group_by(start_quadkey,end_quadkey,start_lon,start_lat,end_lon,end_lat,time_interval) %>%
   dplyr::summarise(n=sum(n_crisis,na.rm=T)) 
 
 population_agg<-population %>%
   mutate(quadkey=substr(quadkey,0,nchar(quadkey)-1))%>%
-  filter(quadkey %in% grid$quadkey) %>%
-  group_by(wd,hour,quadkey) %>%
+  group_by(quadkey,time_interval) %>%
   dplyr::summarise(n_pop=sum(n_crisis,na.rm=T))
-  
+
+population_agg<-population_agg %>%
+  pivot_wider(id_cols = quadkey,names_from = time_interval,values_from = n_pop, names_prefix = "Tpop_")
 ```
 
 ## Mobility Indicators
@@ -64,42 +87,51 @@ population_agg<-population %>%
 
 ```{r}
 intramobility<-movements_agg %>%
-  filter(start_quadkey %in% grid$quadkey) %>% 
   mutate(
     within=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)
     ) %>%
   filter(within==TRUE) %>%
-  group_by(hour,wd,start_quadkey,end_quadkey)%>%
+  group_by(start_quadkey,time_interval)%>%
   dplyr::summarise(intra=sum(n,na.rm = T)) %>%
-  mutate(intra_avg = ifelse(wd=="Weekdays", intra/9, intra/4))
+  rename(quadkey=start_quadkey) %>%
+  pivot_wider(id_cols = quadkey,names_from = time_interval,values_from = intra, names_prefix = "T_intra_")
+
+#%>%
+#  mutate(intra_avg = ifelse(wd=="Weekdays", intra/9, intra/4))
 ```
 
 ### In-flows/Out-flows
 
 ```{r}
+library(multidplyr)
+c <- new_cluster(27)
+
 inflows<-movements_agg %>%
-  filter(end_quadkey %in% grid$quadkey)%>%
+  #filter(end_quadkey %in% grid$quadkey)%>%
   mutate(
     within=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)
     ) %>%
   filter(within==FALSE)%>%
-  group_by(hour,wd,end_quadkey)%>%
+  group_by(end_quadkey,time_interval)%>% #hour,wd,
   partition(c)%>%
   dplyr::summarise(inF=sum(n,na.rm = T)) %>%
   collect() %>%
-  mutate(inflows_avg = ifelse(wd=="Weekdays", inF/9, inF/4))
+  rename(quadkey=end_quadkey) %>%
+  pivot_wider(id_cols = quadkey,names_from = time_interval,values_from = inF, names_prefix = "T_in_")
+
 
 outflows<-movements_agg %>%
-  filter(start_quadkey %in% grid$quadkey) %>%
+  #filter(start_quadkey %in% grid$quadkey) %>%
   mutate(
     within=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)
     ) %>%
   filter(within==FALSE) %>%
-  group_by(hour,wd,start_quadkey)%>%
+  group_by(start_quadkey,time_interval)%>% #hour,wd,
   partition(c)%>%
   dplyr::summarise(outF=sum(n,na.rm = T)) %>%
   collect() %>%
-  mutate(outF_avg = ifelse(wd=="Weekdays", outF/9, outF/4))
+  rename(quadkey=start_quadkey) %>%
+  pivot_wider(id_cols = quadkey,names_from = time_interval,values_from = outF, names_prefix = "T_out_")
 
 ```
 
@@ -108,7 +140,6 @@ outflows<-movements_agg %>%
 ```{r}
 ###inflow distance
 indistance<-movements_agg %>%
-  filter(end_quadkey %in% grid$quadkey)%>%
   mutate(
     within=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)
     ) %>%
@@ -120,15 +151,18 @@ dist<-st_distance(start,end,by_element = T)
 indistance$inDist<-dist
 
 indistance<-indistance %>%
-  group_by(hour,wd,end_quadkey)%>%
+  group_by(end_quadkey,time_interval)%>%
   partition(c)%>%
   dplyr::summarise(inDistAvg=mean(inDist,na.rm = T),
                    inDistMedian=median(inDist,na.rm = T),
                    inDistStD=sd(inDist,na.rm=T)) %>%
-  collect() 
+  collect() %>%
+  rename(quadkey=end_quadkey) %>%
+  pivot_wider(id_cols = quadkey,names_from = time_interval,values_from = starts_with("inDist"), names_prefix = "T_")
+
 
 outdistance<-movements_agg %>%
-  filter(start_quadkey %in% grid$quadkey)%>%
+  #filter(start_quadkey %in% grid$quadkey)%>%
   mutate(
     within=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)
     ) %>%
@@ -140,12 +174,14 @@ dist<-st_distance(start,end,by_element = T)
 outdistance$outDist<-dist
 
 outdistance<-outdistance %>%
-  group_by(hour,wd,start_quadkey)%>%
+  group_by(start_quadkey,time_interval)%>%
   partition(c)%>%
   dplyr::summarise(outDistAvg=mean(outDist,na.rm = T),
                    outDistMedian=median(outDist,na.rm = T),
                    outDistStD=sd(outDist,na.rm=T)) %>%
-  collect() 
+  collect() %>%
+  rename(quadkey=start_quadkey) %>%
+  pivot_wider(id_cols = quadkey,names_from = time_interval,values_from = starts_with("outDist"), names_prefix = "T_")
   
 ```
 
@@ -153,28 +189,209 @@ outdistance<-outdistance %>%
 
 ```{r}
 mobility_indicators<-grid %>%
-  select(quadkey,geom)%>%
-  inner_join(st_drop_geometry(intramobility),by=c("quadkey"="start_quadkey")) %>%
-  select(-end_quadkey) %>%
-  inner_join(inflows,by=c("quadkey"="end_quadkey","hour"="hour","wd"="wd")) %>%
-  inner_join(outflows,by=c("quadkey"="start_quadkey","hour"="hour","wd"="wd")) %>%
-  inner_join(indistance,by=c("quadkey"="end_quadkey","hour"="hour","wd"="wd")) %>%
-  inner_join(outdistance,by=c("quadkey"="start_quadkey","hour"="hour","wd"="wd")) %>%
-  inner_join(population_agg,by=c("quadkey"="quadkey","hour"="hour","wd"="wd"))%>%
+  full_join(intramobility,by=c("quadkey"="quadkey")) %>%
+  full_join(inflows,by=c("quadkey"="quadkey")) %>%
+  full_join(outflows,by=c("quadkey"="quadkey")) %>%
+  full_join(indistance,by=c("quadkey"="quadkey")) %>%
+  full_join(outdistance,by=c("quadkey"="quadkey")) %>%
+  full_join(population_agg,by=c("quadkey"="quadkey"))%>%
+  replace(is.na(.), 0) %>%
   mutate(
-    netF=inF-outF,
-    hour_wd=paste0(hour,"_",wd)
-         )
-remove(list=setdiff(ls(), "mobility_indicators"))
-col<-colnames(st_drop_geometry(mobility_indicators[c(4:16,18)]))
-mobility_indicators_wide<- mobility_indicators %>%
-  st_drop_geometry() %>%
-  select(-hour & -wd) %>%
-  tidyr::pivot_wider(id_cols = quadkey,names_from = hour_wd,values_from = col)
+    T_mov_1=T_intra_1+T_in_1+T_out_1,
+    T_mov_2=T_intra_2+T_in_2+T_out_2
+    )
 
-remove(list=setdiff(ls(), c("mobility_indicators","mobility_indicators_wide"))) 
+remove(c,start,end,indistance,inflows,intramobility,outdistance,outflows,population,movements)
 
-summary(mobility_indicators_wide)
+mobility_indicators_wpop<-mobility_indicators %>%
+  filter(Tpop_1>0 & Tpop_2>0)
+
+mobility_indicators_wpop<- mobility_indicators_wpop %>%
+  mutate(
+    across(starts_with("T_") & ends_with("1"), ~ .x/Tpop_1),
+    across(starts_with("T_") & ends_with("2"), ~ .x/Tpop_2)
+           )
+
+
+mobility_indicators_DIFFERENCES<-mobility_indicators_wpop%>%
+  mutate(
+    diff_intra_1_2 = T_intra_2 - T_intra_1,
+    diff_in_1_2 = T_in_2 - T_in_1,
+    diff_out_1_2 = T_out_2 - T_out_1,
+    diff_inavgdist_1_2=(inDistAvg_T_2 - inDistAvg_T_1),
+    diff_outavgdist_1_2=(outDistAvg_T_2 - outDistAvg_T_1)
+    ) 
+
+mobility_indicators$dailyAvgFBpop<-(mobility_indicators$Tpop_1/28 + mobility_indicators$Tpop_2/28)/2
+
+mobility_indicators$diff_with_pop<-mobility_indicators$dailyAvgFBpop/mobility_indicators$Popultn
+
+mobility_indicators_w_pop<-mobility_indicators[mobility_indicators$Popultn!=0 & mobility_indicators$Tpop_1>0 & mobility_indicators$Tpop_2>0,]
+
+mobility_indicators_DIFFERENCES$dailyAvgFBpop<-(mobility_indicators_DIFFERENCES$Tpop_1/28 + mobility_indicators_DIFFERENCES$Tpop_2/28)/2
+mobility_indicators_DIFFERENCES$prop_pop<-mobility_indicators_DIFFERENCES$dailyAvgFBpop/mobility_indicators_DIFFERENCES$Popultn
+  
+save.image("~/itinerant/pre-processed-movements/mobility_indicators.RData")
+
+###make classes
+make_classes<-function(v,df){
+  class<-paste0("class_",v)
+  pdf<-df %>%
+  filter((!!as.symbol(v))>0)%>%
+  mutate(
+    !!class:=ntile((!!as.symbol(v)),3)
+    )
+  ndf<-df %>%
+  filter((!!as.symbol(v))<0)%>%
+  mutate(
+    !!class:=ntile((!!as.symbol(v)),3)*-1
+    )
+  zdf<-df %>%
+  filter((!!as.symbol(v))==0)%>%
+  mutate(
+    !!class:=0
+    )
+df_final<-rbind(pdf,ndf,zdf)
+df_
+return(df_final)
+}
+
+vars<-colnames(mobility_indicators_DIFFERENCES)[27:31]
+df_final<-mobility_indicators_DIFFERENCES
+for(v in vars){
+  df_final<-make_classes(v,df_final)
+}
+
+df_final$class_popCov<-ntile(df_final$prop_pop,5)
+
 ```
 
-## Clustering?
+## Visualization
+
+```{r}
+
+library(ggplot2)
+library(colorspace)
+
+m<-mobility_indicators_w_pop %>%
+  filter(diff_with_pop<0.5) 
+m %>%
+  ggplot()+
+  geom_sf(aes(fill=diff_with_pop),show.legend = T,color="NA")+
+  scale_fill_viridis_c()+
+  #geom_sf(data = borders, fill="NA",color="grey30")+
+  theme_bw()
+
+
+###loop across all diff vars to make maps
+
+vars<-colnames(mobility_indicators_DIFFERENCES)[1:5]
+
+for(v in vars){
+  
+  mobility_indicators_viz_1<- mobility_indicators_DIFFERENCES %>%
+  filter((!!as.symbol(v))>0)%>%
+  mutate(
+    class=ntile((!!as.symbol(v)),3)
+    )
+mobility_indicators_viz_2<- mobility_indicators_DIFFERENCES %>%
+  filter((!!as.symbol(v))<0)%>%
+  mutate(
+    class=ntile((!!as.symbol(v)),3)*-1
+    )
+mobility_indicators_viz_3<- mobility_indicators_DIFFERENCES %>%
+  filter((!!as.symbol(v))==0)%>%
+  mutate(
+    class=0
+    )
+mobility_indicators_viz<-rbind(mobility_indicators_viz_1,mobility_indicators_viz_2,mobility_indicators_viz_3)
+
+mobility_indicators_viz %>%
+  mutate(class=factor(class,levels = c("3","2","1","0","-1","-2","-3"))) %>%
+ ggplot()+
+  geom_sf(aes(fill=class),show.legend = T,color="NA")+
+  scale_fill_viridis_d()+
+  #geom_sf(data = borders, fill="NA",color="grey30")+
+  labs(fill=v)+
+  theme_bw()
+
+ggsave(paste0("~/itinerant/img/covid_mobility/",v,".jpeg"),dpi = 1200)
+  
+}
+
+##visualise relationship between changes and functions
+vars_class<-paste0("class_",vars)
+for (v in vars_class){
+  
+df_viz<-df_final %>%
+  st_drop_geometry() %>%
+  select(!!as.symbol(v),label) %>%
+  group_by(!!as.symbol(v),label)%>%
+  mutate(count=n()) %>%
+  unique() %>%
+  rename(class=!!as.symbol(v))
+
+df_totals<-df_final %>%
+  st_drop_geometry() %>%
+  select(label) %>%
+  group_by(label)%>%
+  mutate(tot=n()) %>%
+  unique()#%>%
+  #rename(class=!!as.symbol(v))
+
+df_viz<-df_viz %>%
+  inner_join(df_totals,by=c("label"="label")) 
+df_viz<-df_viz %>%
+  mutate(prop=(count/tot)*100) %>%
+  mutate(class=factor(class,levels = c("3","2","1","0","-1","-2","-3")))
+
+ggplot(df_viz,aes(x=as.factor(label),y=prop,fill=class))+
+  geom_bar(stat = "identity") +
+  scale_fill_viridis_d()+
+  theme_bw() +
+  labs(y="% of areas",fill="Variation")
+
+ggsave(paste0("~/itinerant/img/covid_mobility/",v,"_cluster.jpeg"),dpi = 600)
+
+}
+ df_final %>%
+ ggplot()+
+  geom_sf(aes(fill=as.factor(class_popCov)),show.legend = T,color="NA")+
+  scale_fill_viridis_d()+
+  #geom_sf(data = borders, fill="NA",color="grey30")+
+  labs("FB pop coverage") +
+  theme_bw()
+  
+ggsave(paste0("~/itinerant/img/covid_mobility/pop_coverage.jpeg"),dpi = 1200)
+
+df_viz<-df_final %>%
+  st_drop_geometry() %>%
+  select(class_popCov,label) %>%
+  group_by(class_popCov,label)%>%
+  mutate(count=n()) %>%
+  unique() %>%
+  rename(class=class_popCov)
+
+df_totals<-df_final %>%
+  st_drop_geometry() %>%
+  select(class_popCov) %>%
+  group_by(class_popCov)%>%
+  mutate(tot=n()) %>%
+  unique()%>%
+  rename(class=class_popCov)
+
+df_viz<-df_viz %>%
+  inner_join(df_totals,by=c("class"="class")) 
+df_viz<-df_viz %>%
+  mutate(prop=(count/tot)*100) 
+
+ggplot(df_viz,aes(x=class,y=prop,fill=as.factor(label)))+
+  geom_bar(stat = "identity") +
+  scale_fill_viridis_d()+
+  theme_bw() +
+  labs(y="% of areas",fill="Cluster")
+
+ggsave(paste0("~/itinerant/img/covid_mobility/pop_coverage_cluster.jpeg"),dpi = 600)
+
+```
+
