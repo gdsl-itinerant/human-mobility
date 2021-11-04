@@ -1,0 +1,407 @@
+---
+title: "Mobility Indicators"
+output: html_notebook
+---
+
+# Exploring Facebook mobility data
+  
+```{r}
+library(sf)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(ggpubr)
+
+#Load Movements data
+files<-list.files("~/itinerant/facebook_allBritain/movements/july-august-2021/",full.names = T)
+files<-append(files,list.files("~/itinerant/facebook_allBritain/movements/march-april-2020/",full.names = T))
+movements<-files %>% purrr::map_dfr(~ read_csv(.x, col_types = cols(date_time = col_character(),start_quadkey= col_character(),end_quadkey= col_character())))
+movements<-movements[!is.na(movements$n_crisis),]
+
+#Load Grid
+grid<-st_read("~/itinerant/grid_final/FBgridPop.shp")
+grid<-grid %>%
+  select(Popultn,label,quadkey)
+
+kmeans_labels <- read_csv("~/itinerant/cluster_proportions_names.csv")
+grid<-grid %>%
+  select(Popultn,quadkey)%>%
+  inner_join(kmeans_labels[c("index","label")],by=c("quadkey"="index"))
+
+movements<-movements %>%
+  mutate(
+    hour=substr(date_time,nchar(date_time)-5,nchar(date_time)-3),
+    date=as.Date(strftime(date_time, "%Y-%m-%d", tz="GMT")),
+    wday=wday(date_time,label = T),
+    wd=ifelse(wday=="Sun"|wday=="Sat","Weekend","Weekday"),
+    time_interval=case_when(
+      date >= "2021-07-19" & date <"2021-09-06" ~ 2,
+      date < "2021-07-19" ~ 1
+    )) %>%
+  filter(
+    date <="2020-04-19" | date >"2020-04-26"
+  )
+
+
+movements_agg<-movements %>%
+  filter(end_quadkey %in% grid$quadkey & start_quadkey %in% grid$quadkey) %>%
+  group_by(start_quadkey,end_quadkey,time_interval, date) %>%
+  dplyr::summarise(n=sum(n_crisis,na.rm=T)) %>%
+  group_by(start_quadkey,end_quadkey,time_interval) %>%
+  dplyr::summarise(n=mean(n,na.rm=T)
+                   ) 
+```
+
+## Mobility Indicators
+
+### Intra-mobility
+
+```{r}
+
+intramobility<-movements_agg %>%
+  mutate(
+    within=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)
+    ) %>%
+  filter(within==TRUE) %>%
+  select(start_quadkey,n,time_interval) %>%
+  rename(quadkey=start_quadkey) %>%
+  pivot_wider(id_cols = quadkey,names_from = time_interval,values_from = n, names_prefix = "T_intra_")
+ 
+```
+
+### In-flows/Out-flows
+
+```{r}
+
+inflows<-movements_agg %>%
+  mutate(
+    within=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)
+    ) %>%
+  filter(within==FALSE)%>%
+  group_by(end_quadkey,time_interval)%>% 
+  summarise(n=sum(n,na.rm = T))%>%
+  rename(quadkey=end_quadkey) %>%
+  pivot_wider(id_cols = quadkey,names_from = time_interval,values_from = n, names_prefix = "T_in_")
+
+
+outflows<-movements_agg %>%
+  mutate(
+    within=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)
+    ) %>%
+  filter(within==FALSE)%>%
+   #mutate(n=n/start_pop)%>%
+  group_by(start_quadkey,time_interval)%>% 
+  summarise(n=sum(n,na.rm = T))%>%#hour,wd,
+  rename(quadkey=start_quadkey) %>%
+  pivot_wider(id_cols = quadkey,names_from = time_interval,values_from = n, names_prefix = "T_out_")
+
+```
+
+## Combine
+
+```{r}
+mobility_indicators<-grid %>%
+  full_join(intramobility,by=c("quadkey"="quadkey")) %>%
+  full_join(inflows,by=c("quadkey"="quadkey")) %>%
+  full_join(outflows,by=c("quadkey"="quadkey"))%>%
+  replace(is.na(.), 1)
+
+#mobility_indicators<-na.omit(mobility_indicators)
+
+mobility_indicators_DIFFERENCES<-mobility_indicators%>%
+  mutate(
+    diff_intra_1_2 = (T_intra_2 - T_intra_1),
+    diff_in_1_2 = (T_in_2 - T_in_1),
+    diff_out_1_2 = (T_out_2 - T_out_1)
+    ) 
+
+mobility_indicators_DIFFERENCES<-mobility_indicators_DIFFERENCES %>%
+  mutate(
+    class_label_intra=case_when(diff_intra_1_2< -1000 ~ "< -1000",
+                                (diff_intra_1_2>= -1000 & diff_intra_1_2< -500) ~ "-1000 - -500",
+                                (diff_intra_1_2>= -500 & diff_intra_1_2< 0) ~ "-500 - 0",
+                                (diff_intra_1_2==0 ~ "no change"),
+                                (diff_intra_1_2>0 & diff_intra_1_2<=500) ~ "0 - 500",
+                                (diff_intra_1_2> 500 & diff_intra_1_2<1000) ~ "500 - 1000",
+                                diff_intra_1_2>=1000 ~ "> 1000"
+                                ),
+    class_label_in=case_when(diff_in_1_2< -1000 ~ "< -1000",
+                             (diff_in_1_2>= -1000 & diff_in_1_2< -500) ~ "-1000 - -500",
+                             (diff_in_1_2>= -500 & diff_in_1_2< 0) ~ "-500 - 0",
+                                diff_in_1_2==0 ~ "no change",
+                             (diff_in_1_2> 0 & diff_in_1_2<= 500) ~ "0 - 500",
+                             (diff_in_1_2> 500 & diff_in_1_2<= 1000) ~ "500 - 1000",
+                                diff_in_1_2> 1000 ~ "> 1000"
+                                ),
+    class_label_out=case_when(diff_out_1_2< -1000 ~ "< -1000",
+                             (diff_out_1_2>= -1000 & diff_out_1_2< -500) ~ "-1000 - -500",
+                             (diff_out_1_2>= -500 & diff_out_1_2<0) ~ "-500 - 0",
+                                diff_out_1_2== 0 ~ "no change",
+                             (diff_out_1_2> 0 & diff_out_1_2<=500) ~ "0 - 500",
+                             (diff_out_1_2> 500 & diff_out_1_2<=1000) ~ "500 - 1000",
+                                diff_out_1_2> 1000 ~ "> 1000"
+                                )
+  )
+
+mobility_indicators_DIFFERENCES<-mobility_indicators_DIFFERENCES %>%
+  mutate(
+    class_label_intra=case_when(diff_intra_1_2< -0.7 ~ "< -70%",
+                             (diff_intra_1_2>= -0.7 & diff_intra_1_2< -0.4) ~ "-70% - -40%",
+                             (diff_intra_1_2>= -0.4 & diff_intra_1_2< 0) ~ "-40% - 0",
+                                diff_intra_1_2==0 ~ "no change",
+                             (diff_intra_1_2> 0 & diff_intra_1_2<= 3) ~ "0 - 90%",
+                             (diff_intra_1_2> 3 & diff_intra_1_2<= 5) ~ "90% - 150%",
+                                diff_intra_1_2> 5 ~ "> 150%"
+                                ),
+    class_label_in=case_when(diff_in_1_2< -0.7 ~ "< -70%",
+                             (diff_in_1_2>= -0.7 & diff_in_1_2< -0.4) ~ "-70% - -40%",
+                             (diff_in_1_2>= -0.4 & diff_in_1_2< 0) ~ "-40% - 0",
+                                diff_in_1_2==0 ~ "no change",
+                             (diff_in_1_2> 0 & diff_in_1_2<= 0.9) ~ "0 - 90%",
+                             (diff_in_1_2> 0.9 & diff_in_1_2<= 1.5) ~ "90% - 150%",
+                                diff_in_1_2> 1.5 ~ "> 150%"
+                                ),
+    class_label_out=case_when(diff_out_1_2< -0.7 ~ "< -70%",
+                             (diff_out_1_2>= -0.7 & diff_out_1_2< -0.4) ~ "-70% - -40%",
+                             (diff_out_1_2>= -0.4 & diff_out_1_2<0) ~ "-40% - 0",
+                                diff_out_1_2== 0 ~ "no change",
+                             (diff_out_1_2> 0 & diff_out_1_2<=0.9) ~ "0 - 90%",
+                             (diff_out_1_2> 0.9 & diff_out_1_2<=1.5) ~ "90% - 150%",
+                                diff_out_1_2> 1.5 ~ "> 150%"
+                                )
+  )
+
+
+intra_pos<-mobility_indicators_DIFFERENCES[mobility_indicators_DIFFERENCES$diff_intra_1_2>0,]
+intra_pos$class<-ntile(intra_pos$diff_intra_1_2,3)
+
+df_totals<-mobility_indicators_DIFFERENCES %>%
+  st_drop_geometry() %>%
+  select(label) %>%
+  group_by(label)%>%
+  mutate(tot=n()) %>%
+  unique()
+
+df_viz<-mobility_indicators_DIFFERENCES %>%
+  st_drop_geometry() %>%
+  select(class_label_intra,label) %>%
+  group_by(class_label_intra,label)%>%
+  mutate(count=n()) %>%
+  unique() %>%
+  rename(class=class_label_intra)
+
+df_viz<-df_viz %>%
+  inner_join(df_totals,by=c("label"="label")) 
+df_viz<-df_viz %>%
+  mutate(prop=(count/tot)*100) %>%
+  mutate(class=factor(class,levels = c("< -1000","-1000 - -500","-500 - 0","no change","0 - 500","500 - 1000","> 1000")),label=factor(label,levels = c("Countryside","Mixed-use countryside","Residential areas with high commuting","Highly-served, mixed-use areas")))
+#c("< -1000","-500 - -500","-500 - 0","no change","0 - 500","500 - 1000","> 1000")
+ggplot(df_viz,aes(x=as.factor(label),y=prop,fill=class))+
+  geom_bar(stat = "identity") +
+  scale_fill_viridis_d()+
+  theme_bw() +
+  labs(y="% of areas",fill="Localised movements change",x="Cluster")+
+ scale_x_discrete(labels = function(x) str_wrap(x, width = 10))
+
+ggsave(paste0("~/itinerant/img/covid_mobility/intra_cluster_withNA.jpeg"),dpi = 600)
+
+df_viz1<-mobility_indicators_DIFFERENCES %>%
+  st_drop_geometry() %>%
+  select(class_label_in,label) %>%
+  group_by(class_label_in,label)%>%
+  mutate(count=n()) %>%
+  unique() %>%
+  rename(class=class_label_in)
+
+df_viz1<-df_viz1 %>%
+  inner_join(df_totals,by=c("label"="label")) 
+df_viz1<-df_viz1 %>%
+  mutate(prop=(count/tot)*100) %>%
+  mutate(class=factor(class,levels = c("< -1000","-1000 - -500","-500 - 0","no change","0 - 500","500 - 1000","> 1000")),
+         label=factor(label,levels = c("Countryside","Mixed-use countryside","Residential areas with high commuting","Highly-served, mixed-use areas")))
+
+ggplot(df_viz,aes(x=as.factor(label),y=prop,fill=class))+
+  geom_bar(stat = "identity") +
+  scale_fill_viridis_d()+
+  theme_bw() +
+  labs(y="% of areas",fill="Inflows change",x="Cluster")+
+ scale_x_discrete(labels = function(x) str_wrap(x, width = 10))
+
+ggsave(paste0("~/itinerant/img/covid_mobility/inflows_cluster_withNA.jpeg"),dpi = 600)
+
+df_viz<-mobility_indicators_DIFFERENCES %>%
+  st_drop_geometry() %>%
+  select(class_label_out,label) %>%
+  group_by(class_label_out,label)%>%
+  mutate(count=n()) %>%
+  unique() %>%
+  rename(class=class_label_out)
+
+df_viz<-df_viz %>%
+  inner_join(df_totals,by=c("label"="label")) 
+df_viz<-df_viz %>%
+  mutate(prop=(count/tot)*100) %>%
+  mutate(class=factor(class,levels = c("< -1000","-1000 - -500","-500 - 0","no change","0 - 500","500 - 1000","> 1000")),
+         label=factor(label,levels = c("Countryside","Mixed-use countryside","Residential areas with high commuting","Highly-served, mixed-use areas")))
+
+ggplot(df_viz,aes(x=as.factor(label),y=prop,fill=class))+
+  geom_bar(stat = "identity") +
+  scale_fill_viridis_d()+
+  theme_bw() +
+  labs(y="% of areas",fill="Outflows change",x="Cluster")+
+ scale_x_discrete(labels = function(x) str_wrap(x, width = 10))
+
+ggsave(paste0("~/itinerant/img/covid_mobility/outflows_cluster_withNA.jpeg"),dpi = 600)
+```
+
+```{r}
+files_p<-list.files("~/itinerant/facebook_allBritain/population/july-august-2021/",full.names = T)
+files_p<-append(files_p,list.files("~/itinerant/facebook_allBritain/population/march-april-2020/",full.names = T))
+population<-files_p %>% purrr::map_dfr(~ read_csv(.x, col_types = cols(date_time = col_character(),quadkey= col_character()))) 
+population<-population[!is.na(population$n_crisis),]
+```
+
+```{r}
+population<-population %>%
+  mutate(
+    hour=substr(date_time,nchar(date_time)-5,nchar(date_time)-3),
+    date=as.Date(strftime(date_time, "%Y-%m-%d", tz="GMT")),
+    wday=wday(date_time,label = T),
+    wd=ifelse(wday=="Sun"|wday=="Sat","Weekend","Weekday"),
+    time_interval=case_when(
+      date >= "2021-07-19" & date <"2021-09-06" ~ 2,
+      date < "2021-07-19" ~ 1
+    ))%>%
+    filter(
+    date<="2020-04-19" | date>"2020-04-26"
+  )
+
+
+population_agg<-population %>%
+  mutate(quadkey=substr(quadkey,0,nchar(quadkey)-1))%>%
+  filter(quadkey %in% grid$quadkey) %>%
+  group_by(quadkey,time_interval,date,hour) %>%
+  dplyr::summarise(n_pop=sum(n_crisis,na.rm=T))%>%
+  filter(!is.na(n_pop)) %>%
+  group_by(quadkey,time_interval) %>%
+  dplyr::summarise(n_pop=mean(n_pop,na.rm=T))
+  
+population_agg <- population_agg %>%
+  inner_join(grid, by=c("quadkey"="quadkey")) %>%
+  filter(time_interval==2)
+population_agg<-na.omit(population_agg)
+
+population_agg$Coverage<-population_agg$n_pop/population_agg$Popultn
+population_agg<-population_agg %>%
+  mutate(class_label_coverage=case_when(Coverage< 0.1 ~ "< 10%",
+                                (Coverage>=0.1 & Coverage< 0.2) ~ "10% |- 20%",
+                                (Coverage>=0.2 & Coverage< 0.3) ~ "20% |- 30%",
+                                (Coverage>=0.3 ~ ">30%")))%>%
+  mutate(class_label_coverage=factor(class_label_coverage,levels = c("< 10%","10% |- 20%","20% |- 30%", ">30%")))
+
+population_agg %>%
+  st_as_sf()%>%
+ ggplot()+
+  geom_sf(aes(fill=factor(class_label_coverage)),show.legend = T,color="NA")+
+  scale_fill_viridis_d()+
+  #geom_sf(data = borders, fill="NA",color="grey30")+
+  labs("FB pop coverage") +
+  theme_bw()+
+  labs(fill="FB Coverage")
+
+ggsave(paste0("~/itinerant/img/covid_mobility/pop_coverage.jpeg"),dpi = 1200)
+
+```
+```{r}
+make_classes<-function(v,df){
+  class<-paste0("class_",v)
+  pdf<-df %>%
+  filter((!!as.symbol(v))>0)%>%
+  mutate(
+    !!class:=ntile((!!as.symbol(v)),3)
+    )
+  ndf<-df %>%
+  filter((!!as.symbol(v))<0)%>%
+  mutate(
+    !!class:=ntile((!!as.symbol(v)),3)*-1
+    )
+  zdf<-df %>%
+  filter((!!as.symbol(v))==0)%>%
+  mutate(
+    !!class:=0
+    )
+df_final<-rbind(pdf,ndf,zdf)
+return(df_final)
+}
+
+vars<-colnames(mobility_indicators_DIFFERENCES)[11:13]
+df_final<-mobility_indicators_DIFFERENCES
+#df_final<-make_classes(v,df_final)
+for(v in vars){
+  df_final<-make_classes(v,df_final)
+}
+
+mobility_indicators_DIFFERENCES<-mobility_indicators_DIFFERENCES %>%
+  mutate(
+    class_label_intra=case_when(diff_intra_1_2< -4800 ~ "< -1000",
+                                (diff_intra_1_2>= -4800 & diff_intra_1_2< -1200) ~ "-1000 - -500",
+                                (diff_intra_1_2>= -1200 & diff_intra_1_2< 0) ~ "-500 - 0",
+                                (diff_intra_1_2==0 ~ "no change"),
+                                (diff_intra_1_2>0 & diff_intra_1_2<=162) ~ "0 - 500",
+                                (diff_intra_1_2> 162 & diff_intra_1_2<668) ~ "500 - 1000",
+                                diff_intra_1_2>=668 ~ "> 1000"
+                                ),
+    class_label_in=case_when(diff_in_1_2< -1000 ~ "< -1000",
+                             (diff_in_1_2>= -1000 & diff_in_1_2< -500) ~ "-100 - -500%",
+                             (diff_in_1_2>= -500 & diff_in_1_2< 0) ~ "-500 - 0",
+                                diff_in_1_2==0 ~ "no change",
+                             (diff_in_1_2> 0 & diff_in_1_2<= 500) ~ "0 - 500",
+                             (diff_in_1_2> 500 & diff_in_1_2<= 1000) ~ "500 - 1000",
+                                diff_in_1_2> 1000 ~ "> 1000"
+                                ),
+    class_label_out=case_when(diff_out_1_2< -1000 ~ "< -1000",
+                             (diff_out_1_2>= -1000 & diff_out_1_2< -500) ~ "-1000 - -500",
+                             (diff_out_1_2>= -500 & diff_out_1_2<0) ~ "-500 - 0",
+                                diff_out_1_2== 0 ~ "no change",
+                             (diff_out_1_2> 0 & diff_out_1_2<=500) ~ "0 - 500",
+                             (diff_out_1_2> 500 & diff_out_1_2<=1000) ~ "500 - 1000",
+                                diff_out_1_2> 1000 ~ "> 1000"
+                                )
+  )
+
+mobility_indicators_DIFFERENCES %>%
+  mutate(class_label_intra=factor(class_label_intra,levels = c("< -1000","-1000 - -500","-500 - 0","no change","0 - 500","500 - 1000","> 1000"))) %>%
+  ggplot()+
+  geom_sf(aes(fill=factor(class_label_intra)),show.legend = T,color="NA")+
+  scale_fill_viridis_d()+
+  #geom_sf(data = borders, fill="NA",color="grey30")+
+  theme_bw()+
+  labs(fill="Intramobility Change")
+
+ggsave(paste0("~/itinerant/img/covid_mobility/intra_map.jpeg"),dpi = 1200)
+
+mobility_indicators_DIFFERENCES %>%
+  mutate(class_label_in=factor(class_label_in,levels = c("< -1000","-1000 - -500","-500 - 0","no change","0 - 500","500 - 1000","> 1000"))) %>%
+  ggplot()+
+  geom_sf(aes(fill=factor(class_label_in)),show.legend = T,color="NA")+
+  scale_fill_viridis_d()+
+  #geom_sf(data = borders, fill="NA",color="grey30")+
+  theme_bw()+
+  labs(fill="Inflows Change")
+
+ggsave(paste0("~/itinerant/img/covid_mobility/in_map.jpeg"),dpi = 1200)
+
+mobility_indicators_DIFFERENCES %>%
+  mutate(class_label_out=factor(class_label_out,levels = c("< -1000","-1000 - -500","-500 - 0","no change","0 - 500","500 - 1000","> 1000"))) %>%
+  ggplot()+
+  geom_sf(aes(fill=factor(class_label_out)),show.legend = T,color="NA")+
+  scale_fill_viridis_d()+
+  #geom_sf(data = borders, fill="NA",color="grey30")+
+  theme_bw()+
+  labs(fill="Outflows Change")
+
+ggsave(paste0("~/itinerant/img/covid_mobility/out_map.jpeg"),dpi = 1200)
+
+```
+
+
