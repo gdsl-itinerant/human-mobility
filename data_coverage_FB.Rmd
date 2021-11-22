@@ -1,0 +1,268 @@
+---
+title: "Data_Coverage_FB"
+author: "Alessia Calafiore"
+date: "11/4/2021"
+output: html_document
+---
+
+# Exploring Facebook mobility data
+  
+```{r}
+library(sf)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(ggpubr)
+
+#Load Movements data
+files<-list.files("~/itinerant/facebook_allBritain/movements/july-august-2021/",full.names = T)
+files<-append(files,list.files("~/itinerant/facebook_allBritain/movements/march-april-2020/",full.names = T))
+movements<-files %>% purrr::map_dfr(~ read_csv(.x, col_types = cols(date_time = col_character(),start_quadkey= col_character(),end_quadkey= col_character())))
+
+movements_agg<-movements %>%
+  filter(!is.na(n_crisis))%>%
+  group_by(start_quadkey,end_quadkey) %>%
+  summarise(flows=sum(n_crisis))
+
+#Analyse NA coverage
+
+movements_NA<-movements[is.na(movements$n_crisis),] 
+
+movements_NA <-movements_NA %>%
+  group_by(start_quadkey,end_quadkey,start_lat,start_lon,end_lat,end_lon) %>%
+  summarise(na_count=n())
+
+movements_NA<-movements_NA %>%
+  mutate(
+    intra=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)
+  )
+
+
+####visualise flows
+
+betweenTiles<-movements_NA[movements_NA$intra==FALSE,]
+betweenTiles<-betweenTiles %>%
+ full_join(movements_agg,by=c("start_quadkey"="start_quadkey","end_quadkey"="end_quadkey"))%>%
+ filter(!is.na(intra))
+
+withinTiles<-movements_NA[movements_NA$intra==TRUE,]%>%
+ full_join(movements_agg,by=c("start_quadkey"="start_quadkey","end_quadkey"="end_quadkey"))%>%
+ filter(!is.na(intra))
+
+betweenTiles$stroke<-betweenTiles$na_count/1000
+betweenTiles<-betweenTiles %>%
+  filter(start_quadkey %in% grid$quadkey)
+
+mapdeck( token = token, style = mapdeck_style("dark"), pitch = 45 ) %>%
+  add_arc(
+    data = betweenTiles
+    , layer_id = "arc_layer"
+    , origin = c("start_lon", "start_lat")
+    , destination = c("end_lon", "end_lat")
+    , stroke_from = "start_quadkey"
+    , stroke_to = "end_quadkey"
+    , stroke_width = "stroke"
+    , tooltip = "na_count"
+    )
+
+####mapping proportion
+library(leaflet)
+#outflows
+betweenTiles_agg <- betweenTiles %>%
+  group_by(start_quadkey) %>%
+  summarise(
+    na_sum=sum(na_count, na.rm = T),
+    flow_sum=sum(flows,na.rm = T)
+  ) %>%
+  mutate(
+    prop_out=(na_sum/flow_sum),
+    prop_out=ifelse(prop_out=="Inf",1,prop_out)
+  ) %>%
+  inner_join(grid,by=c("start_quadkey"="quadkey")) %>%
+  st_as_sf()%>%
+  st_transform(4326)
+
+bins <- c(0,0.5,1,10, 20,30,40,50)
+pal <- colorBin("viridis", domain = betweenTiles_agg$prop_out, bins = bins)
+labels <- sprintf("<strong>%s</strong><br/>%g prop na flow",betweenTiles_agg$start_quadkey, betweenTiles_agg$prop_out) %>% lapply(htmltools::HTML)
+
+m_out <- leaflet(betweenTiles_agg) %>%
+  addProviderTiles("OpenStreetMap.Mapnik")%>% 
+    addPolygons(
+    fillColor = ~pal(prop_out),
+    weight = 0,
+    opacity = 0,
+    fillOpacity = 0.7,
+    label = labels)%>%
+    addLegend(pal = pal, values = ~prop_out, opacity = 0.7, title = NULL,
+    position = "bottomright")
+
+#inflows
+betweenTiles_agg <- betweenTiles %>%
+  group_by(end_quadkey) %>%
+  summarise(
+    na_sum=sum(na_count, na.rm = T),
+    flow_sum=sum(flows,na.rm = T)
+  ) %>%
+  mutate(
+    prop_out=(na_sum/flow_sum),
+    prop_out=ifelse(prop_out=="Inf",1,prop_out)
+  ) %>%
+  inner_join(grid,by=c("end_quadkey"="quadkey")) %>%
+  st_as_sf()%>%
+  st_transform(4326)
+
+summary(betweenTiles_agg$prop_out)
+
+bins <- c(0,0.5,1,10, 20,30,40,50)
+pal <- colorBin("viridis", domain = betweenTiles_agg$prop_out, bins = bins)
+labels <- sprintf("<strong>%s</strong><br/>%g prop na flow",betweenTiles_agg$end_quadkey, betweenTiles_agg$prop_out) %>% lapply(htmltools::HTML)
+
+m_in <- leaflet(betweenTiles_agg) %>%
+  addProviderTiles("OpenStreetMap.Mapnik")%>% 
+    addPolygons(
+    fillColor = ~pal(prop_out),
+    weight = 0,
+    opacity = 0,
+    fillOpacity = 0.7,
+    label = labels)%>%
+    addLegend(pal = pal, values = ~prop_out, opacity = 0.7, title = NULL,
+    position = "bottomright")
+
+
+withinTiles<-withinTiles %>%
+  uncount(na_count) %>%
+  filter(start_quadkey %in% grid$quadkey)
+
+mapdeck( token = token, style = mapdeck_style("dark"), pitch = 45 ) %>%
+add_hexagon(
+  data = withinTiles
+  , lat = "start_lat"
+  , lon = "start_lon"
+  , elevation_scale = 50
+  , layer_id = "hex_layer"
+  , legend = TRUE
+  , legend_options = list( digits = 0 )
+)
+
+
+
+###does time matter?
+
+movements_NA<-movements[is.na(movements$n_crisis),] 
+
+movements_NA <-movements_NA %>%
+  mutate(
+    hour=substr(date_time,nchar(date_time)-5,nchar(date_time)-3)
+    )%>%
+  group_by(hour) %>%
+  summarise(na_count=n())
+
+library(ggplot2)
+ggplot(movements_NA, aes(x=hour,y=na_count))+
+  geom_bar(stat = "identity", width = 0.3, fill="dark blue") +
+  theme_minimal()+
+  labs(y="Null Flows (Count)")
+
+ggsave("~/itinerant/FB_coverage/movements_time.jpg",dpi=300)
+  
+
+```
+
+```{r}
+#Load FB Population data
+library(lubridate)
+
+files_p<-list.files("~/itinerant/facebook_allBritain/population/july-august-2021/",full.names = T)
+files_p<-append(files_p,list.files("~/itinerant/facebook_allBritain/population/march-april-2020/",full.names = T))
+population<-files_p %>% purrr::map_dfr(~ read_csv(.x, col_types = cols(date_time = col_character(),quadkey= col_character())))
+
+population<-population %>%
+  mutate(
+    hour=substr(date_time,nchar(date_time)-5,nchar(date_time)-3),
+    date=as.Date(strftime(date_time, "%Y-%m-%d", tz="GMT")),
+    wday=wday(date_time,label = T),
+    wd=ifelse(wday=="Sun"|wday=="Sat","Weekend","Weekday"),
+    time_interval=case_when(
+      date >= "2021-07-19" & date <"2021-09-06" ~ 2,
+      date < "2021-07-19" ~ 1
+    ))%>%
+    filter(
+    date<="2020-04-19" | date>"2020-04-26"
+  )
+
+population_agg<-population %>%
+  mutate(quadkey=substr(quadkey,0,nchar(quadkey)-1))%>%
+  #filter(quadkey %in% grid$quadkey) %>%
+  group_by(quadkey,date_time) %>%
+  dplyr::summarise(n_pop=sum(n_crisis,na.rm=T))#%>%
+  #filter(!is.na(n_pop)) %>%
+  #group_by(quadkey,time_interval) %>%
+  #dplyr::summarise(n_pop=mean(n_pop,na.rm=T))
+
+#Load Grid
+grid<-st_read("~/itinerant/grid_final/FBgridPop.shp")
+grid<-grid %>%
+  select(Popultn,label,quadkey)
+
+population_NA<-population[is.na(population$n_crisis),]
+
+population_NA<-population_NA %>% 
+  mutate(quadkey=substr(quadkey,0,nchar(quadkey)-1))%>%
+  filter(quadkey %in% grid$quadkey)
+  group_by(quadkey, lat,lon)%>%
+  summarise(
+    na_count=n()
+  ) %>%
+  
+
+mapdeck( token = token, style = mapdeck_style("dark"), pitch = 45 ) %>%
+add_hexagon(
+  data = population_NA
+  , lat = "lat"
+  , lon = "lon"
+  , elevation_scale = 50
+  , layer_id = "hex_layer"
+  , legend = TRUE
+  , legend_options = list( digits = 0 )
+  
+)
+  
+##does time matter?
+  
+population_NA<-population[is.na(population$n_crisis),] 
+
+population_NA <-population_NA %>%
+  mutate(
+    hour=substr(date_time,nchar(date_time)-5,nchar(date_time)-3)
+    )%>%
+  group_by(hour) %>%
+  summarise(na_count=n())
+
+
+ggplot(population_NA, aes(x=hour,y=na_count))+
+  geom_bar(stat = "identity", width = 0.3, fill="dark blue") +
+  theme_minimal()+
+  labs(y="Null Flows (Count)")
+
+ggsave("~/itinerant/FB_coverage/population_time.jpg",dpi=300)
+
+
+```
+```{r}
+#todo
+#check excess in movements/FBstartpop
+
+###proportions 
+
+movements_pop<-movements %>%
+  inner_join(population_agg,by=c("start_quadkey"="quadkey","date_time"="date_time")) %>%
+  rename(start_pop=n_pop)%>%
+  inner_join(population_agg,by=c("end_quadkey"="quadkey","date_time"="date_time")) %>%
+  rename(end_pop=n_pop) %>%
+  filter(start_pop!=0)%>%
+  mutate(pop_prop=n_crisis/start_pop) 
+
+###0.6819211 of the observations has a proportion > 1
+```
+

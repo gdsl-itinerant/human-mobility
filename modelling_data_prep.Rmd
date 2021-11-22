@@ -1,0 +1,111 @@
+---
+title: "Modelling Data Prep"
+author: "Alessia Calafiore"
+date: "11/19/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#load population
+files_p<-list.files("~/itinerant/facebook_allBritain/population/july-august-2021/",full.names = T)
+files_p<-append(files_p,list.files("~/itinerant/facebook_allBritain/population/march-april-2020/",full.names = T))
+population<-files_p %>% purrr::map_dfr(~ read_csv(.x, col_types = cols(date_time = col_character(),quadkey= col_character())))
+
+population<-population %>%
+  filter(!is.na(n_crisis)) %>%
+  mutate(
+    quadkey=substr(quadkey,0,nchar(quadkey)-1),
+    hour=substr(date_time,nchar(date_time)-5,nchar(date_time)-3),
+    date=as.Date(strftime(date_time, "%Y-%m-%d", tz="GMT")),
+    wday=wday(date_time,label = T),
+    wd=ifelse(wday=="Sun"|wday=="Sat","Weekend","Weekday"),
+    time_interval=case_when(
+      date >= "2021-07-19" & date <"2021-09-06" ~ 2,
+      date < "2021-07-19" ~ 1
+    ))%>%
+    group_by(quadkey,hour,date,wday,wd,time_interval)%>%
+    summarise(pop=sum(n_crisis))
+
+population<-population %>%
+  mutate(
+    lagged_hour=case_when(
+      hour==" 00"~" 16",
+      hour==" 16"~" 08",
+      hour==" 08"~" 00"
+    )
+  )
+##load movements
+movements<-saveRDS(movements,"~/itinerant/pre-processed-movements/movements_no_pop.rds")
+##load grid with classes
+grid<-st_read("~/itinerant/grid_final/FBgridPop.gpkg")
+```
+```{r}
+#merging mobility, pop classification and FB population
+#movements<-readRDS("~/itinerant/pre-processed-movements/movements_no_pop.rds")
+
+mov_pop<-movements %>%
+  select(start_quadkey,end_quadkey,n_crisis,time_interval,date,hour,start_lon,start_lat,end_lon,end_lat) %>%
+  rename(mov=n_crisis)%>%
+  inner_join(population[c("quadkey","pop","lagged_hour","date")],by=c("date"="date","hour"="lagged_hour","start_quadkey"="quadkey")) %>%
+  rename(
+    origin_pop=pop
+  ) %>%
+  inner_join(population[c("quadkey","pop","hour","date")],by=c("date"="date","hour"="hour","end_quadkey"="quadkey")) %>%
+  rename(
+    destination_pop=pop
+  ) %>%
+  inner_join(st_drop_geometry(grid[c("quadkey","Population","jenks","class")]),by=c("start_quadkey"="quadkey"))%>%
+  rename(
+    origin_res_pop=Population,
+    origin_jenks=jenks,
+    origin_class=class
+  ) %>%
+  inner_join(st_drop_geometry(grid[c("quadkey","Population","jenks","class")]),by=c("end_quadkey"="quadkey"))%>%
+  rename(
+    destination_res_pop=Population,
+    destination_jenks=jenks,
+    destination_class=class
+  ) %>%
+  mutate(
+    mov_prop=mov/origin_pop
+  )
+
+mov_pop_right_prop<-mov_pop %>%
+  filter(mov_pop<=1)
+
+mov_pop_wrong_prop<-mov_pop %>%
+  filter(mov_pop>=1)
+
+origin<-mov_pop_right_prop %>%
+  mutate(
+    intra=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)) %>%
+  filter(intra==FALSE)%>%
+  st_as_sf(coords = c("start_lon","start_lat")) 
+st_crs(origin)<-4326
+destination<-mov_pop_right_prop %>%
+  mutate(
+    intra=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)) %>%
+  filter(intra==FALSE)%>%
+  st_as_sf(coords = c("end_lon","end_lat"))
+st_crs(destination)<-4326
+dist<-st_distance(origin,destination,by_element = T) 
+origin$dist<-dist
+intra<-mov_pop_right_prop %>%
+  select(!start_lon & !start_lat)%>%
+  mutate(
+    intra=ifelse(start_quadkey==end_quadkey,TRUE,FALSE)) %>%
+  filter(intra==TRUE) 
+intra$dist<-0
+
+mov_pop_final<-rbind(st_drop_geometry(origin),intra) %>%
+  select(!end_lon & !end_lat)
+
+saveRDS(mov_pop_final,"~/itinerant/pre-processed-movements/mov_pop_final.rds")
+
+saveRDS(mov_pop,"~/itinerant/pre-processed-movements/mov_pop_not_cleaned.rds")
+```
+
