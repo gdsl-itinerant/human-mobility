@@ -1,0 +1,133 @@
+---
+title: "Understanding the Changing Patterns of Human Mobility in Britain During the COVID19 Pandemic through Facebook Data - Pop Classification"
+author: "Alessia Calafiore"
+date: "11/18/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+###Load Grid
+
+grid<-st_read("~/itinerant/facebook_allBritain/grid/grid.gpkg") %>% st_transform(27700)
+
+#add gridded population
+pop_grid<-st_read("~/itinerant/pop_data/grids_layer/vector_grid.shp")
+pop_data<-read_csv("~/itinerant/pop_data/data2011_complete.csv")
+
+pop_data %>%
+  ggplot(aes(x=Population)) + geom_histogram()
+
+summary(pop_data$Population)
+
+pop_grid<-pop_grid %>%
+  inner_join(pop_data,by=c("ID"="grid_ID"))
+
+FBgridWpop <- st_interpolate_aw(pop_grid["Population"], grid, extensive = T) ### sum(FBgridWpop$Population)-sum(pop_grid$Population) 662837.8 people missing!
+
+FBgridWpop$quadkey=grid$strt_qd
+
+#st_write(FBgridWpop,"~/FBgridPop.gpkg")
+
+grid<-st_read("~/itinerant/grid_final/FBgridPop.gpkg") 
+
+grid<-grid %>%
+  mutate(area=sf::st_area(grid),
+         pop_density=(Population/as.numeric(area))*100000,
+         log_pop=log(Population+0.001)) #hectars
+
+grid %>%
+  st_drop_geometry() %>%
+  ggplot(aes(x=log_pop)) + geom_histogram()
+
+grid <- grid %>%
+  mutate(
+    decile= factor(ntile(pop_density,10),levels = c("1","2","3","4","5","6","7","8","9","10"))
+)
+  
+library(classInt)
+jenks<-classIntervals(grid$log_pop, n=10, style="jenks")
+
+grid<-grid %>%
+  mutate(
+    jenks=case_when(
+      log_pop >= jenks[["brks"]][1] & log_pop <= jenks[["brks"]][2]  ~ 1,
+       log_pop > jenks[["brks"]][2] & log_pop <= jenks[["brks"]][3] ~ 2,
+      log_pop > jenks[["brks"]][3] & log_pop <= jenks[["brks"]][4] ~ 3,
+      log_pop > jenks[["brks"]][4] & log_pop <= jenks[["brks"]][5] ~ 4,
+      log_pop > jenks[["brks"]][5] & log_pop <= jenks[["brks"]][6] ~ 5,
+      log_pop > jenks[["brks"]][6] & log_pop <= jenks[["brks"]][7] ~ 6,
+      log_pop > jenks[["brks"]][7] & log_pop <= jenks[["brks"]][8] ~ 7,
+      log_pop > jenks[["brks"]][8] & log_pop <= jenks[["brks"]][9] ~ 8,
+      log_pop > jenks[["brks"]][9] & log_pop <= jenks[["brks"]][10] ~ 9,
+      log_pop > jenks[["brks"]][10] & log_pop <= jenks[["brks"]][11] ~ 10
+    )
+)
+
+urban<-grid[grid$decile==10,]
+urban$class<-paste0("10_",ntile(urban$pop_density,4))
+rural<-grid[grid$decile!=10,]
+rural$class<-rural$decile
+grid<-rbind(urban,rural)
+remove(urban,rural)
+
+grid<-grid %>%
+  mutate(
+    class=case_when(
+      class %in% c("1","2","3","4") ~ 1,
+      class=="5" ~ 2,
+      class=="6" ~ 3,
+      class=="7" ~ 4,
+      class=="8" ~ 5,
+      class=="9" ~ 6,
+      class=="10_1" ~ 7,
+      class=="10_2" ~ 8,
+      class=="10_3" ~ 9,
+      class=="10_4" ~ 10
+    )
+  )
+
+grid$class<-factor(grid$class,levels = c("1","2","3","4","5","6","7","8","9","10"))
+
+grid$jenks<-factor(grid$jenks,levels = c("1","2","3","4","5","6","7","8","9","10"))
+
+
+ggplot()+
+  geom_sf(aes(fill=class),grid,show.legend = T,color=NA) + theme_bw()+
+  scale_fill_viridis_d()
+
+ggsave(paste0("~/itinerant/img/pop_density_classes.jpeg"),dpi = 1200)
+
+ggplot()+
+  geom_sf(aes(fill=decile),grid,show.legend = T,color=NA) + theme_bw()+
+  scale_fill_viridis_d()
+
+ggsave(paste0("~/itinerant/img/pop_density_decile.jpeg"),dpi = 1200)
+
+ggplot()+
+  geom_sf(aes(fill=jenks),grid,show.legend = T,color=NA) + theme_bw()+
+  scale_fill_viridis_d()
+
+ggsave(paste0("~/itinerant/img/log_pop_jenks.jpeg"),dpi = 1200)
+
+##boxplot
+
+grid %>% 
+  st_drop_geometry()%>%
+  select(pop_density,decile,jenks,class) %>%
+  tidyr::pivot_longer(-c(pop_density),names_to = "type",values_to = "class") %>%
+  ggplot(aes(x=class,y=pop_density))+
+  geom_boxplot(width=0.15,outlier.shape = NA)+
+  coord_cartesian(ylim =  c(0, 500))+
+  theme_bw()+
+  facet_wrap(~type)
+
+ggsave(paste0("~/itinerant/img/boxplot_classes.jpeg"),dpi = 600)
+
+st_write(grid,"~/grid_w_classes.gpkg")
+``
+
+
