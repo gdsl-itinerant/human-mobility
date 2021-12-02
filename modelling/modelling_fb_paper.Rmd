@@ -1,0 +1,49 @@
+---
+title: "Regression Modelling Using Facebook Data"
+subtitle: " "
+author: Francisco Rowe
+output: html_notebook
+---
+
+Dependencies
+```{r, message=FALSE, warning=FALSE}
+ #remotes::install_github(“glmmTMB/glmmTMB/glmmTMB”) 
+#install.packages(“viridisLite”) 
+#install.packages(“multidplyr”) 
+#install.packages(“speedglm”) 
+#install.packages(“gpuGlm”)
+
+#data wrangling
+library(multidplyr) 
+library(tidyverse) 
+library(dplyr) 
+# estimating mixed effects models 
+library(lme4) 
+library(merTools) 
+library(glmmTMB) 
+library(nlme) 
+library(speedglm) 
+#library(gpuGlm) 
+# data visualisation 
+library(viridis)
+library(viridisLite)
+  # reporting regression results
+library(broom.mixed)
+library(gtsummary)
+library(sjPlot)
+```
+
+
+
+# Data
+A cross-section should provide a max set of 6080 * 6079 pairs of origin-destination, including intra-mobility
+```{r}
+rm(list=ls())
+cluster <- new_cluster(12)
+df <- readRDS("/Volumes/ITINERANT/pre-processed-movements/movements.rds")
+origin <- as.data.frame(unique(df$start_quadkey)) 
+
+destination <- as.data.frame(unique(df$end_quadkey))
+```
+
+# Data wrangling
