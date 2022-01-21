@@ -2,7 +2,6 @@
 title: "Data_Coverage_FB"
 author: "Alessia Calafiore"
 date: "11/4/2021"
-output: html_document
 ---
 
 # Exploring Facebook mobility data

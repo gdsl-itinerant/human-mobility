@@ -2,7 +2,7 @@
 title: "Understanding the Changing Patterns of Human Mobility in Britain During the COVID19 Pandemic through Facebook Data - Pop Classification"
 author: "Alessia Calafiore"
 date: "11/18/2021"
-output: html_document
+
 ---
 
 ```{r setup, include=FALSE}
