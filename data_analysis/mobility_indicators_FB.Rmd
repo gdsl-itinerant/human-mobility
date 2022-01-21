@@ -15,7 +15,7 @@ library(ggpubr)
 
 grid<-st_read("~/itinerant/grid_final/grid_w_classes_poly.gpkg")
 
-files<-list.files("~/itinerant/pre-processed-movements/exploration/selected_dates",full.names = T) ###files of the two months have been manually moved to a specific folder to speed the processing up
+files<-list.files("~/itinerant/pre-processed-movements/exploration/selected_dates",full.names = T) ###files of the two months have been manually moved to a specific folder 
 df<-files %>% purrr::map_dfr(~ readRDS(.x))
 
 period_1=df[df$date<"2021-01-01",]
@@ -23,7 +23,8 @@ period_2=df[df$date>"2021-01-01",]
 
 ```
 
-Outflows
+## Outflows
+
 ```{r}
 
 outflows1<-period_1 %>%
@@ -53,7 +54,9 @@ outflows2<-period_2 %>%
 outflows<-rbind(outflows1,outflows2)
   
 ```
-Inflows
+
+## Inflows
+
 ```{r}
 
 inflows1<-period_1 %>%
@@ -83,7 +86,9 @@ inflows2<-period_2 %>%
 inflows<-rbind(inflows1,inflows2)
 
 ```
-Intramobility
+
+## Intramobility
+
 ```{r}
 intra1<-period_1 %>%
   filter(length_km == 0) %>%
@@ -112,7 +117,8 @@ intra2<-period_2 %>%
 intraMov<-rbind(intra1,intra2)
 ```
 
-Net mobility
+## Net mobility
+
 ```{r}
 net_mob<-full_join(outflows,inflows,by=c("start_polygon_name"="end_polygon_name","origin_class"="destination_class"))%>%
   replace(is.na(.), 0)%>%
@@ -125,7 +131,8 @@ net_mob<-full_join(outflows,inflows,by=c("start_polygon_name"="end_polygon_name"
 
 ```
 
-Viz 
+## Viz
+
 ```{r}
 
 out<-ggplot(outflows,aes(x=origin_class,y=(ratio-1)*100, color=origin_class,fill=origin_class,group=origin_class))+
@@ -138,37 +145,80 @@ out<-ggplot(outflows,aes(x=origin_class,y=(ratio-1)*100, color=origin_class,fill
   labs(y="Outflows Change from Baseline (%) ",x="Population Class")+
   facet_wrap(~time_interval)
 
+theme_tufte2 <- function(...) {
+theme_tufte() +
+theme(
+text = element_text(family = "robotocondensed")
+)
+}
+
+# load font
+font_add_google("Roboto Condensed", "robotocondensed")
+# automatically use showtext to render text
+
+
+out<-ggplot(data = outflows, aes(x=origin_class,y=(ratio-1)*100, color=origin_class,fill=origin_class)) +
+              scale_fill_viridis_d( option = "D") +
+              scale_color_viridis_d( option = "D") +
+              geom_hline(aes(yintercept = 0),color="gray")+
+              geom_violin(alpha=0.4, position = position_dodge( width = .75 ), size = 0.5) +
+              geom_boxplot(notch = TRUE, outlier.size = -1, width = 0.5, alpha = 0.5, color="black",size=0.2) +
+              geom_point(shape = 21, size = 0.2, position = position_jitterdodge( ), alpha = 1,color="black") +
+              theme_tufte() +
+              theme(legend.position = "none",
+              axis.text = element_text(size = 16),
+              axis.title=element_text(size=18),
+              strip.text = element_text(size=18)
+              ) +
+  ylim(-100,100)+
+              labs(y="Outflows Change from Baseline (%) ",x="Population Class")+
+                facet_wrap(~time_interval)
+
 out
-ggsave("~/itinerant/img/class_analysis/outflows.jpeg")
+ggsave("~/itinerant/img/class_analysis/outflows.jpg",height=15, width=30, units="cm",bg="white",dpi=300)
 
-
-inf<-ggplot(inflows,aes(x=destination_class,y=(ratio-1)*100, color=destination_class,fill=destination_class,group=destination_class))+
-  geom_boxplot(varwidth = TRUE,alpha=0.2)+
-  scale_fill_viridis_d()+
-  scale_color_viridis_d()+
-  theme_bw()+
-  ylim(-50,50)+
-  theme(legend.position = "none")+
-  labs(y="Inflows Change from Baseline (%) ",x="Population Class")+
-  facet_wrap(~time_interval)
+inf<-ggplot(data = inflows, aes(x=destination_class,y=(ratio-1)*100, color=destination_class,fill=destination_class)) +
+              scale_fill_viridis_d( option = "D") +
+              scale_color_viridis_d( option = "D") +
+              geom_hline(aes(yintercept = 0),color="gray")+
+              geom_violin(alpha=0.4, position = position_dodge( width = .75 ), size = 0.5) +
+              geom_boxplot(notch = TRUE, outlier.size = -1, width = 0.5, alpha = 0.5, color="black",size=0.2) +
+              geom_point(shape = 21, size = 0.2, position = position_jitterdodge( ), alpha = 1,color="black") +
+              theme_tufte() +
+              theme(legend.position = "none",
+              axis.text = element_text(size = 16),
+              axis.title=element_text(size=18),
+              strip.text = element_text(size=18)
+              ) +
+  ylim(-100,100)+
+              labs(y="Inflows Change from Baseline (%) ",x="Population Class")+
+                facet_wrap(~time_interval)
 inf
-ggsave("~/itinerant/img/class_analysis/inflows.jpeg")
+ggsave("~/itinerant/img/class_analysis/inflows.jpg",height=15, width=30, units="cm",bg="white",dpi=300)
 
-intra<-ggplot(intraMov,aes(x=destination_class,y=(ratio-1)*100, color=destination_class,fill=destination_class,group=destination_class))+
-  geom_boxplot(varwidth = TRUE,alpha=0.2)+
-  scale_fill_viridis_d()+
-  scale_color_viridis_d()+
-  theme_bw()+
-  ylim(-50,100)+
-  theme(legend.position = "none")+
+intra<-ggplot(data = intraMov, aes(x=destination_class,y=(ratio-1)*100, color=destination_class,fill=destination_class)) +
+              scale_fill_viridis_d( option = "D") +
+              scale_color_viridis_d( option = "D") +
+              geom_hline(aes(yintercept = 0),color="gray")+
+              geom_violin(alpha=0.4, position = position_dodge( width = .75 ), size = 0.5) +
+              geom_boxplot(notch = TRUE, outlier.size = -1, width = 0.5, alpha = 0.5, color="black",size=0.2) +
+              geom_point(shape = 21, size = 0.2, position = position_jitterdodge( ), alpha = 1,color="black") +
+              theme_tufte() +
+              theme(legend.position = "none",
+              axis.text = element_text(size = 16),
+              axis.title=element_text(size=18),
+              strip.text = element_text(size=18)
+              ) +
+  ylim(-25,100)+
   labs(y="Intraflows Change from Baseline (%) ",x="Population Class")+
   facet_wrap(~time_interval)
 
 intra
-ggsave("~/itinerant/img/class_analysis/intra.jpeg")
+ggsave("~/itinerant/img/class_analysis/intra.jpg",height=15, width=30, units="cm",bg="white",dpi=300)
 ```
 
-Heatmap
+## Heatmap
+
 ```{r}
 period_1_agg<-period_1 %>%
   group_by(origin_class,destination_class)%>%
@@ -232,7 +282,8 @@ period_agg%>%
 ggsave("~/itinerant/img/class_analysis/heatmap.jpeg")
 ```
 
-Net flows Viz 
+## Net flows Viz 
+
 ```{r}
 netflows1<-outflows1 %>% 
   full_join(inflows1, by=c("origin_class"="destination_class","start_polygon_name"="end_polygon_name"))%>%
