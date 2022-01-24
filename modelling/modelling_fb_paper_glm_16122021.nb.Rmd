@@ -1,14 +1,14 @@
 ---
 title: "Regression Modelling Using Facebook Data"
 subtitle: " "
-author: Francisco Rowe
+author: Francisco Rowe & Alessia Calafiore
 output: html_notebook
 ---
 
 Dependencies
 ```{r, message=FALSE, warning=FALSE}
 #data wrangling
-library(multidplyr) 
+#library(multidplyr) 
 library(tidyverse) 
 library(dplyr) 
 # estimating mixed effects models 
@@ -29,19 +29,13 @@ library(gtsummary)
 library(sjPlot)
 ```
 
-The code first obtains all the regression coefficients for the 2020 and 2021 periods separately, and then creates the plot.
-
-# Monthly models for the 2020 period
 
 ## Data
 A cross-section should provide a max set of 6080 * 6079 pairs of origin-destination, including intra-mobility
 ```{r}
 rm(list=ls())
 
-cluster <- new_cluster(6)
-
-df <- readRDS("/Volumes/ITINERANT/pre-processed-movements/modelling/full_period_mov_pop.rds") %>% 
-  filter(date < "2021-01-01") %>% 
+df <- readRDS("~/itinerant/pre-processed-movements/modelling/full_period_mov_pop.rds") %>% 
   select( -c(tile_size, start_polygon_id, end_polygon_id, country, level, is_statistically_significant, start_quadkey, end_quadkey, n_baseline, n_difference, percent_change, start_lat, start_lon, end_lat, end_lon, geometry) )
 
 # id for unique tiles
@@ -62,7 +56,6 @@ df <- df %>% mutate(
   
 ```
 
-
 Creating area class interaction variable
 ```{r}
 df <-  df %>% mutate(
@@ -89,154 +82,282 @@ df$z_destination_pop <- (df$destination_res_pop - mean(df$destination_res_pop)) 
 df$z_d <- (df$length_km - mean(df$length_km)) / sd(df$length_km)
 ```
 
+Create df with averaged covariates
 ```{r}
-df <- df %>%
-  group_by(monthyear)
+ave_pre_df <- with(df, data.frame(
+origin_destination_class = unique(df$origin_destination_class),
+z_d = mean(z_d),
+z_origin_pop = mean(z_origin_pop),
+z_destination_pop = mean(z_destination_pop),
+day = median(day),
+hour = factor(" 08", levels = c(" 00"," 08", " 16")),
+wd = factor("Weekday", levels = c("Weekday","Weekend")),
+z_score = 2))
 
-## Partition into smaller datasets
-by_month <- df  %>% 
-  partition(cluster)
-
-rm(df)
-gc()
 ```
 
-## Modelling 
-
-Model 1
+## Running the model with embedded parallelisation and save results
 ```{r}
-eq <- mov_prop ~ 
- z_d + origin_destination_class + # pair part 
- z_origin_pop + # origin part
- z_destination_pop + # destination_part 
- day + hour + wd + # time part
- z_score # facebook
+
+for (i in 1:18){
+  print(monthyear[i])
+  dft<-df[df$monthyear==monthyear[i],]
+  print(summary(dft$month))
+  m<-glm(mov_prop ~ z_d + origin_destination_class + z_origin_pop + z_destination_pop + day + hour + wd + z_score, data = dft, family = binomial("logit"), weights = start_pop)
+  filename<-paste0("~/Projects/ITINERANT/modelling_output/m_",i,".rds")
+  saveRDS(m,filename)
+  print(i)
+}
+
 ```
 
+## Getting Predictions
 
 ```{r}
-system.time({
 
-  models <- by_month %>% 
-    do(model = glm(mov_prop ~ z_d + origin_destination_class + z_origin_pop + z_destination_pop + day + hour + wd + z_score, data = ., family = binomial("logit"), weights = start_pop))
-
-})
-
-rm(by_month)
-gc()
-```
-
-```{r}
-system.time({
+pred_prob<-NULL
+for (i in 1:18){
+  ave_pre_df_temp<-ave_pre_df
+  filename<-paste0("~/Projects/ITINERANT/modelling_output/m_",i,".rds")
+  m<-readRDS(filename)
+  predict<-predict.glm(m, newdata = ave_pre_df, "response", se.fit = TRUE)
+  ave_pre_df_temp<- ave_pre_df_temp %>%
+  mutate(
+    probs=predict$fit,
+    std_error=predict$se.fit,
+    ci_lower = probs - ( 1.96 * std_error ) ,
+    ci_upper = probs + ( 1.96 * std_error ),
+    monthyear=monthyear[i]
+  )
   
-final <- models %>% 
-  collect()
-
-})
-
-rm(models)
-gc()
+  pred_prob<-rbind(probs,ave_pre_df_temp[c("origin_destination_class","probs","ci_lower","ci_upper","month")])
+  print(i)
+}
 ```
 
+## Visualising the probabilities
 
-### Extracting outputs
 ```{r}
-
-system.time({
+#data prep
+pred_prob<-pred_prob %>%
+  separate(origin_destination_class, c("origin_class","destination_class"), sep = "([:])") %>%
+  mutate(
+    origin_destination_class=paste0(origin_class,"_",destination_class),
+    origin_class = ordered(origin_class, 
+                             levels = c("1","2","3","4","5","6","7","8","9","10")),
+    destination_class = ordered(destination_class, 
+                                  levels = c("1","2","3","4","5","6","7","8","9","10")
+                                                              ))
   
-# extracting coefficients
-coefficients_df <- map_df(final$model, coefficients)
-
-# extracting standard errors
-se_df <- map(final$model, summary) %>% 
-  map(., coef) %>% 
-  map_df(., ~.[,"Std. Error"])
-
-# adding month names
-#month <- c("march", "april")
-
-# reshaping to long format
-coef_long_df <- cbind(monthyear, coefficients_df) %>% 
-  pivot_longer(
-    cols = -c(monthyear), 
-  names_to = "coefficient", 
-  values_to = "estimate"
+#make plots
+g <- pred_prob %>% 
+  ggplot(., aes(x = monthyear, y = probs, group = origin_destination_class)) +
+  geom_hline( yintercept = 0, linetype = "solid", colour = "gray85", size = 0.5) +
+  geom_vline( xintercept = as.numeric(as.Date("2020-03-23")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-03-08")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-04-12")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-07-19")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_line(colour = "darkblue", size = 1) + 
+  geom_ribbon(aes(ymin=(ci_lower), ymax=(ci_upper)), alpha=0.35, fill="gray36") +
+  #facet_wrap(~ origin_destination_class, nrow = 10) +
+  facet_grid(origin_class ~ destination_class) +
+  theme_tufte() +
+  #theme(text = element_text(family="robotocondensed")) +
+  theme(legend.position = "none",
+        text=element_text(size=12),
+        plot.subtitle = element_text(color = c('black'), hjust = 0.5, size = 12,face = "bold"),
+        axis.text=element_text(size=8),
+        axis.title=element_text(size=12)
+  ) +
+  labs(x= "Month",
+       y = "Regression Probs",
+       subtitle = "Destination Class") +
+  scale_x_date(date_labels = "%b",
+               date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
+               limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
   )
 
-# reshaping to long format
-se_long_df <- cbind(monthyear, se_df) %>% pivot_longer(
-  cols = -c(monthyear), 
-  names_to = "coefficient",
-  values_to = "std_error"
+png("~/glm-probs.png",units="in", width=10, height=10, res=300)
+annotate_figure(g, 
+                left = text_grob("Origin Class", 
+                                 face= "bold", 
+                                 color = "black", 
+                                 rot = 90, 
+                                 size = 12,
+                                 family = "serif"))
+dev.off()
+
+g1 <- pred_prob %>% 
+  filter(origin_class %in% c(1, 2, 3, 4, 5) & destination_class %in% c(1, 2, 3, 4, 5)) %>%
+  ggplot(., aes(x = monthyear, y = probs, group = origin_destination_class)) +
+  geom_hline( yintercept = 0, linetype = "solid", colour = "gray85", size = 0.5) +
+  geom_vline( xintercept = as.numeric(as.Date("2020-03-23")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-03-08")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-04-12")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-07-19")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_line(colour = "darkblue", size = 1) + 
+  geom_ribbon(aes(ymin=(ci_lower), ymax=(ci_upper)), alpha=0.35, fill="gray36") +
+  #facet_wrap(~ coefficient, nrow = 10) +
+  facet_grid(origin_class ~ destination_class) +
+  theme_tufte() +
+  #theme(text = element_text(family="robotocondensed")) +
+  theme(legend.position = "none",
+        text=element_text(size=12),
+        plot.subtitle = element_text(color = c('black'), hjust = 0.5, size = 12,face = "bold"),
+        axis.text=element_text(size=8),
+        axis.title=element_text(size=12)
+  ) +
+  labs(x= "Month",
+       y = "Regression Probs",
+       subtitle = "Destination Class") +
+  scale_x_date(date_labels = "%b",
+               date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
+               limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
   )
 
-# creating a single df
-long_df <- full_join(coef_long_df, 
-                     se_long_df, 
-                     by = c("coefficient" = "coefficient", 
-                            "monthyear" = "monthyear") 
-                     )
+png("~/glm-probs_class_o1-5_d1-5.png",units="in", width=10, height=10, res=300)
+annotate_figure(g1, 
+                left = text_grob("Origin Class", 
+                                 face= "bold", 
+                                 color = "black", 
+                                 rot = 90, 
+                                 size = 12,
+                                 family = "serif"))
+dev.off()
 
-# computing 95% confidence intervals
-long_df <- long_df %>% mutate(
-  ci_lower = estimate - ( 1.96 * std_error ) ,
-  ci_upper = estimate + ( 1.96 * std_error )
-)
+g2 <- pred_prob %>% 
+  filter(origin_class %in% c(1, 2, 3, 4, 5) & destination_class %in% c(6, 7, 8, 9, 10)) %>%
+  ggplot(., aes(x = monthyear, y = probs, group = origin_destination_class)) +
+  geom_hline( yintercept = 0, linetype = "solid", colour = "gray85", size = 0.5) +
+  geom_vline( xintercept = as.numeric(as.Date("2020-03-23")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-03-08")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-04-12")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-07-19")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_line(colour = "darkblue", size = 1) + 
+  geom_ribbon(aes(ymin=(ci_lower), ymax=(ci_upper)), alpha=0.35, fill="gray36") +
+  facet_grid(origin_class ~ destination_class) +
+  theme_tufte() +
+  #theme(text = element_text(family="robotocondensed")) +
+  theme(legend.position = "none",
+        text=element_text(size=12),
+        plot.subtitle = element_text(color = c('black'), hjust = 0.5, size = 12,face = "bold"),
+        axis.text=element_text(size=8),
+        axis.title=element_text(size=12)
+  ) +
+  labs(x= "Month",
+       y = "Regression Probs",
+       subtitle = "Destination Class") +
+  scale_x_date(date_labels = "%b",
+               date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
+               limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
+  )
 
-rm(list=setdiff(ls(), "long_df"))
+png("~/glm-probs_class_o1-5_d6-10.png",units="in", width=10, height=10, res=300)
+annotate_figure(g2, 
+                left = text_grob("Origin Class", 
+                                 face= "bold", 
+                                 color = "black", 
+                                 rot = 90, 
+                                 size = 12,
+                                 family = "serif"))
+dev.off()
 
-})
+
+g3 <- pred_prob %>% 
+  filter(origin_class %in% c(6, 7, 8, 9, 10) & destination_class %in% c(1, 2, 3, 4, 5)) %>%
+  ggplot(., aes(x = monthyear, y = probs, group = origin_destination_class)) +
+  geom_hline( yintercept = 0, linetype = "solid", colour = "gray85", size = 0.5) +
+  geom_vline( xintercept = as.numeric(as.Date("2020-03-23")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-03-08")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-04-12")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-07-19")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_line(colour = "darkblue", size = 1) + 
+  geom_ribbon(aes(ymin=(ci_lower), ymax=(ci_upper)), alpha=0.35, fill="gray36") +
+  facet_grid(origin_class ~ destination_class) +
+  theme_tufte() +
+  #theme(text = element_text(family="robotocondensed")) +
+  theme(legend.position = "none",
+        text=element_text(size=12),
+        plot.subtitle = element_text(color = c('black'), hjust = 0.5, size = 12,face = "bold"),
+        axis.text=element_text(size=8),
+        axis.title=element_text(size=12)
+  ) +
+  labs(x= "Month",
+       y = "Regression Probs",
+       subtitle = "Destination Class") +
+  scale_x_date(date_labels = "%b",
+               date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
+               limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
+  )
+
+png("~/glm-probs_class_o6-10_d1-5.png",units="in", width=10, height=10, res=300)
+annotate_figure(g3, 
+                left = text_grob("Origin Class", 
+                                 face= "bold", 
+                                 color = "black", 
+                                 rot = 90, 
+                                 size = 12,
+                                 family = "serif"))
+dev.off()
+
+g4 <- pred_prob %>% 
+  filter(origin_class %in% c(6, 7, 8, 9, 10) & destination_class %in% c(6, 7, 8, 9, 10)) %>%
+  ggplot(., aes(x = monthyear, y = probs, group = origin_destination_class)) +
+  geom_hline( yintercept = 0, linetype = "solid", colour = "gray85", size = 0.5) +
+  geom_vline( xintercept = as.numeric(as.Date("2020-03-23")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-03-08")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-04-12")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-07-19")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_line(colour = "darkblue", size = 1) + 
+  geom_ribbon(aes(ymin=(ci_lower), ymax=(ci_upper)), alpha=0.35, fill="gray36") +
+  #facet_wrap(~ coefficient, nrow = 10) +
+  facet_grid(origin_class ~ destination_class) +
+  theme_tufte() +
+  #theme(text = element_text(family="robotocondensed")) +
+  theme(legend.position = "none",
+        text=element_text(size=12),
+        plot.subtitle = element_text(color = c('black'), hjust = 0.5, size = 12,face = "bold"),
+        axis.text=element_text(size=8),
+        axis.title=element_text(size=12)
+  ) +
+  labs(x= "Month",
+       y = "Regression Probs",
+       subtitle = "Destination Class") +
+  scale_x_date(date_labels = "%b",
+               date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
+               limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
+  )
+
+png("~/glm-probs_class_o6-10_d6-10.png",units="in", width=10, height=10, res=300)
+annotate_figure(g4, 
+                left = text_grob("Origin Class", 
+                                 face= "bold", 
+                                 color = "black", 
+                                 rot = 90, 
+                                 size = 12,
+                                 family = "serif"))
+dev.off()
+
 ```
 
-### Displaying the results
-
-Creating origin and destination ids
-```{r}
-
-system.time({
-  
-long_df <- long_df %>% mutate(
-  origin_class = substr(long_df$coefficient, 25, 26) %>% 
-    gsub(":", "", .),
-  destination_class = substr(long_df$coefficient, 27, 28) %>% 
-    gsub(":", "", .),
-)
-
-long_df$origin_class[long_df$coefficient == "origin_destination_class10:10"] = "10"
-long_df$destination_class[long_df$coefficient == "origin_destination_class10:10"] = "10"
-
-long_df <-  long_df %>% mutate(
- origin_class = ordered(origin_class, 
-                      levels = c("1","2","3","4","5","6","7","8","9","10", "")),
- destination_class = ordered(destination_class, 
-                           levels = c("1","2","3","4","5","6","7","8","9","10", ""))
-)
+# Modelling With Multidplyr - Coefficients 
 
 
-})
+The code first obtains all the regression coefficients for the 2020 and 2021 periods separately, and then creates the plot.
 
-write_csv(long_df, "/Users/Franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/glm_coeff2020_class.csv")
-```
-
-
-# Monthly models for the 2021 period
+# Monthly models for the 2020 period
 
 ## Data
 A cross-section should provide a max set of 6080 * 6079 pairs of origin-destination, including intra-mobility
 ```{r}
 rm(list=ls())
-gc()
-
-cluster <- new_cluster(10)
-
+cluster <- new_cluster(6)
 df <- readRDS("/Volumes/ITINERANT/pre-processed-movements/modelling/full_period_mov_pop.rds") %>% 
-  filter(date > "2021-01-01") %>% 
-  select( -c(tile_size, country, level, n_baseline, n_difference, percent_change, start_lat, start_lon, end_lat, end_lon, geometry) )
-
+  filter(date < "2021-01-01") %>% 
+  select( -c(tile_size, start_polygon_id, end_polygon_id, country, level, is_statistically_significant, start_quadkey, end_quadkey, n_baseline, n_difference, percent_change, start_lat, start_lon, end_lat, end_lon, geometry) )
 # id for unique tiles
 origin <- as.data.frame(unique(df$start_polygon_name)) 
 destination <- as.data.frame(unique(df$end_polygon_name))
-
 str(df)
 ```
 
@@ -262,7 +383,6 @@ destination_class = ordered(destination_class,
 wd = factor(wd,
             levels = c("Weekday", "Weekend"))
 )
-
 df$origin_destination_class <- fct_cross(df$origin_class, df$destination_class)
 df$day <- as.numeric(ordered(df$date))
 df$month <- lubridate::month(lubridate::ymd(df$date), label=TRUE)
@@ -281,11 +401,9 @@ df$z_d <- (df$length_km - mean(df$length_km)) / sd(df$length_km)
 ```{r}
 df <- df %>%
   group_by(monthyear)
-
 ## Partition into smaller datasets
 by_month <- df  %>% 
   partition(cluster)
-
 rm(df)
 gc()
 ```
@@ -305,12 +423,9 @@ eq <- mov_prop ~
 
 ```{r}
 system.time({
-
   models <- by_month %>% 
     do(model = glm(mov_prop ~ z_d + origin_destination_class + z_origin_pop + z_destination_pop + day + hour + wd + z_score, data = ., family = binomial("logit"), weights = start_pop))
-
 })
-
 rm(by_month)
 gc()
 ```
@@ -320,9 +435,7 @@ system.time({
   
 final <- models %>% 
   collect()
-
 })
-
 rm(models)
 gc()
 ```
@@ -330,18 +443,16 @@ gc()
 
 ### Extracting outputs
 ```{r}
-
 system.time({
   
 # extracting coefficients
 coefficients_df <- map_df(final$model, coefficients)
-
 # extracting standard errors
 se_df <- map(final$model, summary) %>% 
   map(., coef) %>% 
   map_df(., ~.[,"Std. Error"])
-
-
+# adding month names
+#month <- c("march", "april")
 # reshaping to long format
 coef_long_df <- cbind(monthyear, coefficients_df) %>% 
   pivot_longer(
@@ -349,29 +460,24 @@ coef_long_df <- cbind(monthyear, coefficients_df) %>%
   names_to = "coefficient", 
   values_to = "estimate"
   )
-
 # reshaping to long format
 se_long_df <- cbind(monthyear, se_df) %>% pivot_longer(
   cols = -c(monthyear), 
   names_to = "coefficient",
   values_to = "std_error"
   )
-
 # creating a single df
 long_df <- full_join(coef_long_df, 
                      se_long_df, 
                      by = c("coefficient" = "coefficient", 
                             "monthyear" = "monthyear") 
                      )
-
 # computing 95% confidence intervals
 long_df <- long_df %>% mutate(
   ci_lower = estimate - ( 1.96 * std_error ) ,
   ci_upper = estimate + ( 1.96 * std_error )
 )
-
 rm(list=setdiff(ls(), "long_df"))
-
 })
 ```
 
@@ -379,7 +485,6 @@ rm(list=setdiff(ls(), "long_df"))
 
 Creating origin and destination ids
 ```{r}
-
 system.time({
   
 long_df <- long_df %>% mutate(
@@ -388,20 +493,175 @@ long_df <- long_df %>% mutate(
   destination_class = substr(long_df$coefficient, 27, 28) %>% 
     gsub(":", "", .),
 )
-
 long_df$origin_class[long_df$coefficient == "origin_destination_class10:10"] = "10"
 long_df$destination_class[long_df$coefficient == "origin_destination_class10:10"] = "10"
-
 long_df <-  long_df %>% mutate(
  origin_class = ordered(origin_class, 
                       levels = c("1","2","3","4","5","6","7","8","9","10", "")),
  destination_class = ordered(destination_class, 
                            levels = c("1","2","3","4","5","6","7","8","9","10", ""))
 )
-
-
 })
+write_csv(long_df, "/Users/Franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/glm_coeff2020_class.csv")
+```
 
+
+# Monthly models for the 2021 period
+
+## Data
+A cross-section should provide a max set of 6080 * 6079 pairs of origin-destination, including intra-mobility
+```{r}
+rm(list=ls())
+gc()
+cluster <- new_cluster(10)
+df <- readRDS("/Volumes/ITINERANT/pre-processed-movements/modelling/full_period_mov_pop.rds") %>% 
+  filter(date > "2021-01-01") %>% 
+  select( -c(tile_size, country, level, n_baseline, n_difference, percent_change, start_lat, start_lon, end_lat, end_lon, geometry) )
+# id for unique tiles
+origin <- as.data.frame(unique(df$start_polygon_name)) 
+destination <- as.data.frame(unique(df$end_polygon_name))
+str(df)
+```
+
+## Data Wrangling
+
+Proportion of people moving
+```{r}
+df <- df %>% mutate(
+  mov_prop = n_crisis / start_pop
+) %>% 
+  filter(mov_prop <= 1)
+  
+```
+
+
+Creating area class interaction variable
+```{r}
+df <-  df %>% mutate(
+origin_class = ordered(origin_class, 
+                      levels = c("1","2","3","4","5","6","7","8","9","10")),
+destination_class = ordered(destination_class, 
+                           levels = c("1","2","3","4","5","6","7","8","9","10")),
+wd = factor(wd,
+            levels = c("Weekday", "Weekend"))
+)
+df$origin_destination_class <- fct_cross(df$origin_class, df$destination_class)
+df$day <- as.numeric(ordered(df$date))
+df$month <- lubridate::month(lubridate::ymd(df$date), label=TRUE)
+month <- unique(df$month)
+df$monthyear = lubridate::floor_date(df$date, "month")
+monthyear <- unique(df$monthyear)
+```
+
+Standardising covariates
+```{r}
+df$z_origin_pop <- (df$origin_res_pop - mean(df$origin_res_pop)) / sd(df$origin_res_pop)
+df$z_destination_pop <- (df$destination_res_pop - mean(df$destination_res_pop)) / sd(df$destination_res_pop)
+df$z_d <- (df$length_km - mean(df$length_km)) / sd(df$length_km)
+```
+
+```{r}
+df <- df %>%
+  group_by(monthyear)
+## Partition into smaller datasets
+by_month <- df  %>% 
+  partition(cluster)
+rm(df)
+gc()
+```
+
+## Modelling 
+
+Model 1
+```{r}
+eq <- mov_prop ~ 
+ z_d + origin_destination_class + # pair part 
+ z_origin_pop + # origin part
+ z_destination_pop + # destination_part 
+ day + hour + wd + # time part
+ z_score # facebook
+```
+
+
+```{r}
+system.time({
+  models <- by_month %>% 
+    do(model = glm(mov_prop ~ z_d + origin_destination_class + z_origin_pop + z_destination_pop + day + hour + wd + z_score, data = ., family = binomial("logit"), weights = start_pop))
+})
+rm(by_month)
+gc()
+```
+
+```{r}
+system.time({
+  
+final <- models %>% 
+  collect()
+})
+rm(models)
+gc()
+```
+
+
+### Extracting outputs
+```{r}
+system.time({
+  
+# extracting coefficients
+coefficients_df <- map_df(final$model, coefficients)
+# extracting standard errors
+se_df <- map(final$model, summary) %>% 
+  map(., coef) %>% 
+  map_df(., ~.[,"Std. Error"])
+# reshaping to long format
+coef_long_df <- cbind(monthyear, coefficients_df) %>% 
+  pivot_longer(
+    cols = -c(monthyear), 
+  names_to = "coefficient", 
+  values_to = "estimate"
+  )
+# reshaping to long format
+se_long_df <- cbind(monthyear, se_df) %>% pivot_longer(
+  cols = -c(monthyear), 
+  names_to = "coefficient",
+  values_to = "std_error"
+  )
+# creating a single df
+long_df <- full_join(coef_long_df, 
+                     se_long_df, 
+                     by = c("coefficient" = "coefficient", 
+                            "monthyear" = "monthyear") 
+                     )
+# computing 95% confidence intervals
+long_df <- long_df %>% mutate(
+  ci_lower = estimate - ( 1.96 * std_error ) ,
+  ci_upper = estimate + ( 1.96 * std_error )
+)
+rm(list=setdiff(ls(), "long_df"))
+})
+```
+
+### Displaying the results
+
+Creating origin and destination ids
+```{r}
+system.time({
+  
+long_df <- long_df %>% mutate(
+  origin_class = substr(long_df$coefficient, 25, 26) %>% 
+    gsub(":", "", .),
+  destination_class = substr(long_df$coefficient, 27, 28) %>% 
+    gsub(":", "", .),
+)
+long_df$origin_class[long_df$coefficient == "origin_destination_class10:10"] = "10"
+long_df$destination_class[long_df$coefficient == "origin_destination_class10:10"] = "10"
+long_df <-  long_df %>% mutate(
+ origin_class = ordered(origin_class, 
+                      levels = c("1","2","3","4","5","6","7","8","9","10", "")),
+ destination_class = ordered(destination_class, 
+                           levels = c("1","2","3","4","5","6","7","8","9","10", ""))
+)
+})
 write_csv(long_df, "/Users/Franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/glm_coeff2021_class.csv")
 ```
 
@@ -413,9 +673,7 @@ write_csv(long_df, "/Users/Franciscorowe 1/Dropbox/Francisco/Research/in_progres
 rm(list=ls())
 long_df2020 <- read_csv("/Users/Franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/glm_coeff2020_class.csv")
 long_df2021 <- read_csv("/Users/Franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/glm_coeff2021_class.csv")
-
 long_df <- rbind(long_df2020, long_df2021)
-
 g <- long_df %>% dplyr::filter(grepl("origin_destination_class", coefficient)) %>% 
 ggplot(., aes(x = monthyear, y = estimate, group = coefficient)) +
   geom_hline( yintercept = 0, linetype = "solid", colour = "gray85", size = 0.5) +
@@ -442,7 +700,6 @@ ggplot(., aes(x = monthyear, y = estimate, group = coefficient)) +
                date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
                limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
   )
-
 png("/Users/Franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/glm-coeff_class.png",units="in", width=10, height=10, res=300)
 annotate_figure(g, 
                 left = text_grob("Origin Class", 
@@ -483,7 +740,6 @@ ggplot(., aes(x = monthyear, y = estimate, group = coefficient)) +
                date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
                limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
   )
-
 png("/Users/Franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/glm-coeff_class_o1-5_d1-5.png",units="in", width=10, height=10, res=300)
 annotate_figure(g1, 
                 left = text_grob("Origin Class", 
@@ -524,7 +780,6 @@ ggplot(., aes(x = monthyear, y = estimate, group = coefficient)) +
                date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
                limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
   )
-
 png("/Users/Franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/glm-coeff_class_o1-5_d6-10.png",units="in", width=10, height=10, res=300)
 annotate_figure(g2, 
                 left = text_grob("Origin Class", 
@@ -565,7 +820,6 @@ ggplot(., aes(x = monthyear, y = estimate, group = coefficient)) +
                date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
                limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
   )
-
 png("/Users/Franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/glm-coeff_class_o6-10_d1-5.png",units="in", width=10, height=10, res=300)
 annotate_figure(g3, 
                 left = text_grob("Origin Class", 
@@ -608,7 +862,6 @@ ggplot(., aes(x = monthyear, y = estimate, group = coefficient)) +
                date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
                limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
   )
-
 png("/Users/Franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/glm-coeff_class_o6-10_d6-10.png",units="in", width=10, height=10, res=300)
 annotate_figure(g4, 
                 left = text_grob("Origin Class", 
@@ -622,7 +875,6 @@ dev.off()
 
 ### Odds Ratios
 ```{r}
-
 g <- long_df %>% dplyr::filter(grepl("origin_destination_class", coefficient)) %>% 
 ggplot(., aes(x = monthyear, y = exp(estimate), group = coefficient)) +
   geom_hline( yintercept = 1, linetype = "dashed", colour = "gray85", size = 0.5) +
@@ -645,7 +897,6 @@ ggplot(., aes(x = monthyear, y = exp(estimate), group = coefficient)) +
                date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
                limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
   )
-
 png("/Users/Franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/glm-oddsratio_class.png",units="in", width=10, height=10, res=300)
 annotate_figure(g, 
                 left = text_grob("Origin Class", 
