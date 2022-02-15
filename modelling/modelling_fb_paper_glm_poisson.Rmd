@@ -199,7 +199,7 @@ for (i in 17:18){
 ```{r}
 coefficients<-NULL
 for (i in 1:18){
-  filename<-paste0("~/Projects/ITINERANT/modelling_output/v4/m_",i,".rds")
+  filename<-paste0("~/itinerant/modelling_output/v3/m_",i,".rds")
   m<-readRDS(filename)
   # extracting coefficients
   coefficients_df <- as.data.frame(coefficients(m)) %>%
@@ -237,7 +237,7 @@ for (i in 1:18){
 ```{r}
 coefficients<-NULL
 for (i in 1:18){
-  filename<-paste0("~/Projects/ITINERANT/modelling_output/v4/m_",i,".rds")
+  filename<-paste0("~/itinerant/modelling_output/v4/m_",i,".rds")
   m<-readRDS(filename)
   # extracting coefficients
   coefficients_df <- broom.mixed::tidy(m, conf.int = TRUE) %>%

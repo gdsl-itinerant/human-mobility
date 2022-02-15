@@ -12,6 +12,7 @@ library(tidyverse)
 library(lubridate)
 library(ggplot2)
 library(ggpubr)
+library(sysfonts)
 
 grid<-st_read("~/itinerant/grid_final/grid_w_classes_poly.gpkg")
 
@@ -37,7 +38,7 @@ outflows1<-period_1 %>%
   )%>%
   mutate(
   origin_class=factor(origin_class,levels = c("1","2","3","4","5","6","7","8","9","10")),
-  time_interval="Lockdown")
+  time_interval="First Lockdown")
 
 outflows2<-period_2 %>%
   filter(length_km != 0) %>%
@@ -49,9 +50,10 @@ outflows2<-period_2 %>%
   )%>%
   mutate(
   origin_class=factor(origin_class,levels = c("1","2","3","4","5","6","7","8","9","10")),
-  time_interval="Restictions Lifted")
+  time_interval="Re-opening")
 
 outflows<-rbind(outflows1,outflows2)
+write.csv(outflows,"~/itinerant/exploration_output_csv/outflows.csv",row.names = F)
   
 ```
 
@@ -69,7 +71,7 @@ inflows1<-period_1 %>%
   )%>%
   mutate(
   destination_class=factor(destination_class,levels = c("1","2","3","4","5","6","7","8","9","10")),
-  time_interval="Lockdown")
+  time_interval="First Lockdown")
 
 inflows2<-period_2 %>%
   filter(length_km != 0) %>%
@@ -81,9 +83,11 @@ inflows2<-period_2 %>%
   )%>%
   mutate(
   destination_class=factor(destination_class,levels = c("1","2","3","4","5","6","7","8","9","10")),
-  time_interval="Restictions Lifted")
+  time_interval="Re-opening")
 
 inflows<-rbind(inflows1,inflows2)
+
+write.csv(inflows,"~/itinerant/exploration_output_csv/inflows.csv",row.names = F)
 
 ```
 
@@ -100,7 +104,7 @@ intra1<-period_1 %>%
   )%>%
   mutate(
   destination_class=factor(destination_class,levels = c("1","2","3","4","5","6","7","8","9","10")),
-  time_interval="Lockdown")
+  time_interval="First Lockdown")
 
 intra2<-period_2 %>%
   filter(length_km == 0) %>%
@@ -112,9 +116,11 @@ intra2<-period_2 %>%
   )%>%
   mutate(
   destination_class=factor(destination_class,levels = c("1","2","3","4","5","6","7","8","9","10")),
-  time_interval="Restictions Lifted")
+  time_interval="Re-opening")
 
 intraMov<-rbind(intra1,intra2)
+
+write.csv(intraMov,"~/itinerant/exploration_output_csv/intraflows.csv",row.names = F)
 ```
 
 ## Net mobility
@@ -134,16 +140,6 @@ net_mob<-full_join(outflows,inflows,by=c("start_polygon_name"="end_polygon_name"
 ## Viz
 
 ```{r}
-
-out<-ggplot(outflows,aes(x=origin_class,y=(ratio-1)*100, color=origin_class,fill=origin_class,group=origin_class))+
-  geom_boxplot(varwidth = TRUE,alpha=0.2)+
-  scale_fill_viridis_d()+
-  scale_color_viridis_d()+
-  theme_bw()+
-  ylim(-50,50)+
-  theme(legend.position = "none")+
-  labs(y="Outflows Change from Baseline (%) ",x="Population Class")+
-  facet_wrap(~time_interval)
 
 theme_tufte2 <- function(...) {
 theme_tufte() +
@@ -171,7 +167,7 @@ out<-ggplot(data = outflows, aes(x=origin_class,y=(ratio-1)*100, color=origin_cl
               strip.text = element_text(size=18)
               ) +
   ylim(-100,100)+
-              labs(y="Outflows Change from Baseline (%) ",x="Population Class")+
+              labs(y="Outflows Change from Baseline (%) ",x="Population Density Class")+
                 facet_wrap(~time_interval)
 
 out
@@ -191,7 +187,7 @@ inf<-ggplot(data = inflows, aes(x=destination_class,y=(ratio-1)*100, color=desti
               strip.text = element_text(size=18)
               ) +
   ylim(-100,100)+
-              labs(y="Inflows Change from Baseline (%) ",x="Population Class")+
+              labs(y="Inflows Change from Baseline (%) ",x="Population Density Class")+
                 facet_wrap(~time_interval)
 inf
 ggsave("~/itinerant/img/class_analysis/inflows.jpg",height=15, width=30, units="cm",bg="white",dpi=300)
@@ -210,7 +206,7 @@ intra<-ggplot(data = intraMov, aes(x=destination_class,y=(ratio-1)*100, color=de
               strip.text = element_text(size=18)
               ) +
   ylim(-25,100)+
-  labs(y="Intraflows Change from Baseline (%) ",x="Population Class")+
+  labs(y="Intraflows Change from Baseline (%) ",x="Population Density Class")+
   facet_wrap(~time_interval)
 
 intra
