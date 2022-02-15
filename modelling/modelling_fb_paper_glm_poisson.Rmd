@@ -138,15 +138,26 @@ ave_pre_df <- with(df, data.frame(
 
 ```
 
+## Save monthly pre-processed data
+```{r}
+for (i in 1:18){
+  print(monthyear[i])
+  dft<-df[df$monthyear==monthyear[i],]
+  saveRDS(dft,paste0("~/itinerant/modelling_input/i_",i,".rds"))
+}
+```
+
+
 ## Running the model with embedded parallelisation and save results
 ```{r}
 
 for (i in 1:18){
-  print(monthyear[i])
-  dft<-df[df$monthyear==monthyear[i],]
+  #print(monthyear[i])
+  dft<-readRDS(paste0("~/itinerant/modelling_input/i_",i,".rds"))
+  #dft<-df[df$monthyear==monthyear[i],]
   print(summary(dft$month))
-  m<-glm(n_crisis ~ z_d + origin_destination_class + z_origin_pop + z_destination_pop + day + hour + wd + z_score, data = dft, family = poisson("log"), weights = start_pop)
-  filename<-paste0("~/Projects/ITINERANT/modelling_output/v2/m_",i,".rds")
+  m<-glm(n_crisis ~ z_d + origin_destination_class + z_origin_pop + z_destination_pop + day + hour + wd + z_score, data = dft, family = quasipoisson(link="log"), weights = start_pop)
+  filename<-paste0("~/Projects/ITINERANT/modelling_output/v5/m_",i,".rds")
   saveRDS(m,filename)
   print(i)
 }
@@ -171,11 +182,6 @@ day + hour + wd + # time part
 z_score + # facebook
 ( 1 | origin_destination_class) # random intercept
 
-for (i in 1:18){
-  print(monthyear[i])
-  dft<-df[df$monthyear==monthyear[i],]
-  saveRDS(dft,paste0("~/Projects/ITINERANT/modelling_input/i_",i,".rds"))
-}
 
 for (i in 17:18){
   print(monthyear[i])
@@ -240,7 +246,7 @@ for (i in 1:18){
   filename<-paste0("~/itinerant/modelling_output/v4/m_",i,".rds")
   m<-readRDS(filename)
   # extracting coefficients
-  coefficients_df <- broom.mixed::tidy(m, conf.int = TRUE) %>%
+  coefficients_df <- broom.mixed::tidy(m, conf.int = T) #%>%
     mutate(
       monthyear=monthyear[i]
     )
