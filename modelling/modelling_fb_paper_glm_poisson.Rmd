@@ -138,27 +138,19 @@ ave_pre_df <- with(df, data.frame(
 
 ```
 
-## Save monthly pre-processed data
-```{r}
-for (i in 1:18){
-  print(monthyear[i])
-  dft<-df[df$monthyear==monthyear[i],]
-  saveRDS(dft,paste0("~/itinerant/modelling_input/i_",i,".rds"))
-}
-```
-
-
 ## Running the model with embedded parallelisation and save results
 ```{r}
 
 for (i in 1:18){
   #print(monthyear[i])
-  dft<-readRDS(paste0("~/itinerant/modelling_input/i_",i,".rds"))
+  dft<-readRDS(paste0("~/Projects/ITINERANT/modelling_input/i_",i,".rds"))
   #dft<-df[df$monthyear==monthyear[i],]
   print(summary(dft$month))
-  m<-glm(n_crisis ~ z_d + origin_destination_class + z_origin_pop + z_destination_pop + day + hour + wd + z_score, data = dft, family = quasipoisson(link="log"), weights = start_pop)
-  filename<-paste0("~/Projects/ITINERANT/modelling_output/v5/m_",i,".rds")
+  m<-glm(n_crisis ~ z_d + origin_destination_class + z_origin_pop + z_destination_pop + day + hour + wd + z_score, data = dft, family = poisson(link="log"), weights = start_pop)
+  filename<-paste0("~/Projects/ITINERANT/modelling_output/v2/m_",i,".rds")
   saveRDS(m,filename)
+  remove(dft,m)
+  gc()
   print(i)
 }
 
@@ -182,15 +174,20 @@ day + hour + wd + # time part
 z_score + # facebook
 ( 1 | origin_destination_class) # random intercept
 
+for (i in 1:18){
+  print(monthyear[i])
+  dft<-df[df$monthyear==monthyear[i],]
+  saveRDS(dft,paste0("~/Projects/ITINERANT/modelling_input/i_",i,".rds"))
+}
 
 for (i in 17:18){
   print(monthyear[i])
   dft<-readRDS(paste0("~/Projects/ITINERANT/modelling_input/i_",i,".rds"))
-  m<-glmmTMB(eq1,
-          data=dft,
-          ziformula=~0,
-          family=nbinom2,
-          REML = TRUE)
+  m<-glmer.nb(eq2,
+          data=dft)#,
+          #ziformula=~0,
+          #family=nbinom2,
+          #REML = TRUE)
    
   filename<-paste0("~/Projects/ITINERANT/modelling_output/v4/m_",i,".rds")
   saveRDS(m,filename)
@@ -205,7 +202,7 @@ for (i in 17:18){
 ```{r}
 coefficients<-NULL
 for (i in 1:18){
-  filename<-paste0("~/itinerant/modelling_output/v3/m_",i,".rds")
+  filename<-paste0("~/Projects/ITINERANT/modelling_output/v2/m_",i,".rds")
   m<-readRDS(filename)
   # extracting coefficients
   coefficients_df <- as.data.frame(coefficients(m)) %>%
@@ -228,14 +225,45 @@ for (i in 1:18){
   coefficients_t<-coefficients_df %>%
     inner_join(se_df, by=c("origin_destination_class"="origin_destination_class","monthyear"="monthyear")) %>%
     mutate(
-     ci_lower = estimate - ( 1.96 * std_error ) ,
-     ci_upper = estimate + ( 1.96 * std_error )
+     ci_lower = estimate - ( 2.57 * std_error ),
+     ci_upper = estimate + ( 2.57 * std_error )
      )
     
  coefficients<-rbind(coefficients, coefficients_t) 
  print(i)
 }
 
+```
+## Extract Diagnostics
+```{r}
+
+#standard goodness of fit stats: residual deviance, chi-square test, Akaike, Pseudo-R2
+#standard overall stats: number of observations, df, log-likelihood
+diagnostics<-NULL
+for (i in 1:18){
+  filename<-paste0("~/Projects/ITINERANT/modelling_output/v2/m_",i,".rds")
+   m<-readRDS(filename)
+   month<-m$data[1,]$monthyear
+   residual_deviance<-m$deviance
+   p_chi_test<-pchisq(m$deviance, df = m$df.residual, lower.tail=FALSE) #P[X > x]
+   Akaike<-AIC(m)
+   pseudo_r<-1-(m$deviance/m$null.deviance)
+   n_obs<-nrow(m$data)
+   df<-df.residual(m)
+   logLik<-as.data.frame(logLik(m))$`c(x)`
+   d<-data.frame(month,residual_deviance,p_chi_test,Akaike,pseudo_r,n_obs,df,logLik)
+   diagnostics<-rbind(diagnostics,d)
+   print(i)
+}   
+
+
+diagnostics %>%
+  mutate(month=format_ISO8601(diagnostics$month, precision = "ym"))%>%
+  kbl(caption="Poisson Regression Monthly Models Diagnostics.",
+       format= "latex",
+   col.names = c("Month-Year","Residual Deviance","Chi Square Test","Akaike","Pseudo R squared","Number of Obs.","Degrees of Freedom","Log-Likelihood"),
+                  align="r") %>%
+   kable_classic(full_width = F, html_font = "times new roman")
 ```
 
 ## Extraxct coefficients neg binomial
@@ -246,7 +274,7 @@ for (i in 1:18){
   filename<-paste0("~/itinerant/modelling_output/v4/m_",i,".rds")
   m<-readRDS(filename)
   # extracting coefficients
-  coefficients_df <- broom.mixed::tidy(m, conf.int = T) #%>%
+  coefficients_df <- broom.mixed::tidy(m, conf.int = TRUE) %>%
     mutate(
       monthyear=monthyear[i]
     )
@@ -257,6 +285,8 @@ for (i in 1:18){
 }
 
 ```
+
+
 
 ## Visualising other co-variates coefficients
 
@@ -380,10 +410,10 @@ g <- ggplot() +
             aes(x = monthyear, y = estimate),
             colour = "dark blue",
             size = 1) + 
-  geom_ribbon(data=coefficients_OD, 
-              aes(x = monthyear, ymin=(ci_lower), ymax=(ci_upper)), 
-              alpha=0.35, 
-              fill="gray36") +
+  #geom_ribbon(data=coefficients_OD, 
+             # aes(x = monthyear, ymin=(ci_lower), ymax=(ci_upper)), 
+             # alpha=0.35, 
+            #fill="gray36") +
   #facet_wrap(~ origin_destination_class, nrow = 10) +
   facet_grid(origin_class ~ destination_class) +
   theme_tufte() +
@@ -422,6 +452,11 @@ dev.off()
 ##without intercept
 
 g <- ggplot() +
+  geom_ribbon(data=coefficients_OD, 
+              aes(x = monthyear, ymin=(ci_lower), ymax=(ci_upper)), 
+              alpha=1, 
+              fill="gray36",
+              size=5) +
   geom_rect(
     aes(xmin = as.Date(start), xmax = as.Date(end), fill = name), 
     ymin = -Inf, ymax = Inf, alpha = 0.4, 
@@ -431,10 +466,6 @@ g <- ggplot() +
             aes(x = monthyear, y = estimate), 
             colour = "darkblue",
             size = 1) + 
-  geom_ribbon(data=coefficients_OD, 
-              aes(x = monthyear, ymin=(ci_lower), ymax=(ci_upper)), 
-              alpha=0.35, 
-              fill="gray36") +
   #facet_wrap(~ origin_destination_class, nrow = 10) +
   facet_grid(origin_class ~ destination_class) +
   theme_tufte() +
