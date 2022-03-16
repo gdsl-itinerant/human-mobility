@@ -169,7 +169,7 @@ ggplot(data = grid_viz, aes(x=class,y=pop_density,fill=class,colour=class)) +
               axis.title=element_text(size=18),
               strip.text = element_text(size=18)
               ) +
-              labs(y="Persons per hectar",x="Population Density Class")+
+              labs(y="Persons per hectare",x="Population Density Class")+
   facet_wrap(~type)
 
 ggsave("~/itinerant/img/class_analysis/pop_classes.jpg",height=15, width=30, units="cm",bg="white",dpi=300)
