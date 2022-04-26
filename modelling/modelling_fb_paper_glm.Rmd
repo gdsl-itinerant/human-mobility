@@ -1,0 +1,130 @@
+---
+title: "Regression Modelling Using Facebook Data"
+subtitle: " "
+author: Francisco Rowe
+output: html_notebook
+---
+
+Dependencies
+```{r, message=FALSE, warning=FALSE}
+#data wrangling
+library(multidplyr) 
+library(tidyverse) 
+library(dplyr) 
+# estimating mixed effects models 
+library(lme4) 
+library(merTools) 
+library(glmmTMB) 
+library(nlme)
+library(rstanarm)
+# data visualisation 
+library(viridis)
+library(viridisLite)
+  # reporting regression results
+library(broom)
+library(broom.mixed)
+library(gtsummary)
+library(sjPlot)
+```
+
+
+# Data
+A cross-section should provide a max set of 6080 * 6079 pairs of origin-destination, including intra-mobility
+```{r}
+rm(list=ls())
+cluster <- new_cluster(2)
+df <- readRDS("/Volumes/ITINERANT/pre-processed-movements/modelling/full_period_mov_pop.rds") %>% 
+  filter(date < "2020-05-30")
+
+# id for unique tiles
+origin <- as.data.frame(unique(df$start_polygon_name)) 
+destination <- as.data.frame(unique(df$end_polygon_name))
+
+str(df)
+```
+
+# Data Wrangling
+
+Proportion of people moving
+```{r}
+df <- df %>% mutate(
+  mov_prop = n_crisis / start_pop
+) %>% 
+  filter(mov_prop <= 1)
+  
+```
+
+
+Creating area class interaction variable
+```{r}
+df <-  df %>% mutate(
+origin_jenks = factor(origin_jenks, 
+                      levels = c("1","2","3","4","5","6","7","8","9","10")),
+destination_jenks = factor(destination_jenks, 
+                           levels = c("1","2","3","4","5","6","7","8","9","10")),
+wd = factor(wd,
+            levels = c("Weekday", "Weekend"))
+)
+
+df$origin_destination_class <-fct_cross(df$origin_jenks, df$destination_jenks)
+df$day <- as.numeric(ordered(df$date))
+df$month <- lubridate::month(lubridate::ymd(df$date)) 
+```
+
+Standardising covariates
+```{r}
+df$z_origin_pop <- (df$origin_res_pop - mean(df$origin_res_pop)) / sd(df$origin_res_pop)
+df$z_destination_pop <- (df$destination_res_pop - mean(df$destination_res_pop)) / sd(df$destination_res_pop)
+df$z_d <- (df$length_km - mean(df$length_km)) / sd(df$length_km)
+```
+
+```{r}
+df <- df %>%
+  group_by(month)
+
+## Partition into smaller datasets
+by_month <- df  %>% partition(cluster)
+```
+
+# Modelling 
+
+Model 1
+```{r}
+eq <- mov_prop ~ 
+ z_d + origin_destination_class + # pair part 
+ z_origin_pop + # origin part
+ z_destination_pop + # destination_part 
+ day + hour + wd # time part
+```
+
+mov_prop ~ z_d + origin_destination_class + z_origin_pop + z_destination_pop + day + hour + wd
+
+```{r}
+system.time({
+
+  models <- by_month %>% 
+    do(mod = glm(mov_prop ~ z_d + origin_destination_class + z_origin_pop + z_destination_pop + day + hour + wd, data = ., family = binomial("logit"), weights = start_pop))
+
+})
+
+
+```
+
+```{r}
+final <- models %>% 
+  collect()
+```
+
+```{r}
+## Extracting outputs
+#summary(results_mod <- final$mod[[1]])
+coeff <- final$mod[[1]]$coefficients
+se <- final$mod[[1]]$std.error
+
+coefficients_df <- map_df(final$mod, coefficients)
+se_df <- map_df(final$mod, std.error)
+```
+
+
+
+

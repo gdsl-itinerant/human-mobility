@@ -1,0 +1,527 @@
+---
+title: "Regression Modelling Using Facebook Data"
+subtitle: "Linear Regression"
+author: Francisco Rowe & Alessia Calafiore
+output: html_notebook
+---
+
+  Dependencies
+```{r, message=FALSE, warning=FALSE}
+#data wrangling
+#library(multidplyr) 
+library(tidyverse) 
+library(dplyr) 
+# estimating mixed effects models 
+library(lme4) 
+library(merTools) 
+#library(glmmTMB) 
+#library(nlme)
+#library(rstanarm)
+# data visualisation 
+library(viridis)
+library(viridisLite)
+library(ggthemes)
+library(ggpubr)
+# reporting regression results
+library(broom)
+library(broom.mixed)
+library(gtsummary)
+library(sjPlot)
+```
+
+
+## Data
+A cross-section should provide a max set of 6080 * 6079 pairs of origin-destination, including intra-mobility
+```{r}
+rm(list=ls())
+df <- readRDS("/Volumes/ITINERANT/pre-processed-movements/modelling/full_period_mov_pop.rds") %>% 
+  select( -c(tile_size, start_polygon_id, end_polygon_id, country, level, start_quadkey, end_quadkey, n_baseline, start_lat, start_lon, end_lat, end_lon, geometry) )
+# id for unique tiles
+origin <- as.data.frame(unique(df$start_polygon_name)) 
+destination <- as.data.frame(unique(df$end_polygon_name))
+str(df)
+```
+
+## Data Wrangling
+
+Creating area class interaction variable
+```{r}
+df <-  df %>% mutate(
+  origin_class = ordered(origin_class, 
+                         levels = c("1","2","3","4","5","6","7","8","9","10")),
+  destination_class = ordered(destination_class, 
+                              levels = c("1","2","3","4","5","6","7","8","9","10")),
+  wd = factor(wd,
+              levels = c("Weekday", "Weekend"))
+)
+df$origin_destination_class <- fct_cross(df$origin_class, df$destination_class)
+df$day <- as.numeric(ordered(df$date))
+df$month <- lubridate::month(lubridate::ymd(df$date), label=TRUE)
+month <- unique(df$month)
+df$monthyear = lubridate::floor_date(df$date, "month")
+monthyear <- unique(df$monthyear)
+```
+
+Standardising covariates
+```{r}
+df$z_origin_pop <- (df$origin_res_pop - mean(df$origin_res_pop)) / sd(df$origin_res_pop)
+df$z_destination_pop <- (df$destination_res_pop - mean(df$destination_res_pop)) / sd(df$destination_res_pop)
+df$z_d <- (df$length_km - mean(df$length_km)) / sd(df$length_km)
+```
+
+Create df with averaged covariates
+```{r}
+ave_pre_df <- with(df, data.frame(
+  origin_destination_class = unique(df$origin_destination_class),
+  z_d = mean(z_d),
+  z_origin_pop = mean(z_origin_pop),
+  z_destination_pop = mean(z_destination_pop),
+  day = median(day),
+  hour = factor(" 08", levels = c(" 00"," 08", " 16")),
+  wd = factor("Weekday", levels = c("Weekday","Weekend")),
+  z_score = 2))
+```
+
+
+## Timeline
+```{r}
+timeline <- dplyr::data_frame(start=c("2020-03-23","2020-06-01","2020-10-14","2021-01-06","2021-03-29"),
+                              end=c("2020-06-01","2020-10-14","2021-01-06","2021-03-29","2021-08-01"),
+                              name=c("First lockdown","Partial re-opening","Tier system &\nSecond lockdown","Third lockdown","Re-opening"))
+timeline<-timeline %>%
+  mutate(name=factor(name,levels = c("First lockdown","Partial re-opening","Tier system &\nSecond lockdown","Third lockdown","Re-opening")))
+  
+```
+
+## Running the model with embedded parallelisation and save results
+```{r}
+for (i in 1:18){
+  print(monthyear[i])
+  dft <- df[df$monthyear == monthyear[i],]
+  print(summary(dft$month))
+  m <- glm(percent_change ~ z_d + origin_destination_class + z_origin_pop + z_destination_pop + day + hour + wd + z_score, data = dft, weights = start_pop)
+  filename<-paste0("/Users/franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/percent/m_",i,".rds")
+  saveRDS(m,filename)
+  print(i)
+}
+```
+
+## Extract Coefficients
+
+```{r}
+coefficients<-NULL
+for (i in 1:18){
+  filename<-paste0("/Users/franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/percent/m_",i,".rds")
+  m<-readRDS(filename)
+  # extracting coefficients
+  coefficients_df <- as.data.frame(coefficients(m)) %>%
+    rename(estimate =`coefficients(m)`)%>%
+    mutate(
+      origin_destination_class=rownames(.),
+      monthyear=monthyear[i]
+    )
+  rownames(coefficients_df)<-seq(1:nrow(coefficients_df))
+  
+  # extracting standard errors
+  se_df <- as.data.frame(summary(m)$coefficients[, 2]) %>%
+    rename(std_error =`summary(m)$coefficients[, 2]`)%>%
+    mutate(
+      origin_destination_class=rownames(.),
+      monthyear=monthyear[i]
+    )
+  rownames(se_df)<-seq(1:nrow(se_df))
+  
+  coefficients_t<-coefficients_df %>%
+    inner_join(se_df, by=c("origin_destination_class"="origin_destination_class","monthyear"="monthyear")) %>%
+    mutate(
+     ci_lower = estimate - ( 1.96 * std_error ) ,
+     ci_upper = estimate + ( 1.96 * std_error )
+     )
+    
+ coefficients<-rbind(coefficients, coefficients_t) 
+ print(i)
+}
+```
+
+## Visualising OD Coefficients
+
+```{r}
+coefficients_OD<-coefficients %>%
+  filter(grepl("origin_destination", origin_destination_class))
+coefficients_OD<-coefficients_OD %>%
+  mutate(
+    origin_destination_class=gsub("origin_destination_class","",coefficients_OD$origin_destination_class)
+  )%>%
+  separate(origin_destination_class, c("origin_class","destination_class"), sep = "([:])") %>%
+  mutate(
+    origin_destination_class=paste0(origin_class,"_",destination_class),
+    origin_class = ordered(origin_class, 
+                           levels = c("1","2","3","4","5","6","7","8","9","10")),
+    destination_class = ordered(destination_class, 
+                                levels = c("1","2","3","4","5","6","7","8","9","10")
+    ))
+intercept <- coefficients_NOD[coefficients_NOD$origin_destination_class=="(Intercept)",]
+intercept$origin_destination_class <- "1:1"
+intercept<-intercept %>% separate(origin_destination_class, c("origin_class","destination_class"), sep = "([:])")
+coefficients_OD<-rbind(coefficients_OD[c(1:7)],intercept)
+coefficients_OD$color<-ifelse(coefficients_OD$origin_class==1 & coefficients_OD$destination_class==1,"red","darkblue")
+#make plots
+g <- ggplot() +
+  geom_vline( xintercept = as.numeric(as.Date("2021-04-12")), linetype = "solid", colour = "black", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-03-08")), linetype = "solid", colour = "black", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-05-17")), linetype = "solid", colour = "black", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-03-29")), linetype = "solid", colour = "black", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-07-19")), linetype = "solid", colour = "black", size = 0.2) +
+  geom_rect(
+    aes(xmin = as.Date(start), xmax = as.Date(end), fill = name), 
+    ymin = -Inf, ymax = Inf, alpha = 0.4, 
+    data = timeline
+  )+
+  geom_line(data = coefficients_OD, 
+            aes(x = monthyear, y = estimate),
+            colour = "dark blue",
+            size = 1) + 
+  geom_ribbon(data=coefficients_OD, 
+              aes(x = monthyear, ymin=(ci_lower), ymax=(ci_upper)), 
+              alpha=0.35, 
+              fill="gray36") +
+  #facet_wrap(~ origin_destination_class, nrow = 10) +
+  facet_grid(origin_class ~ destination_class) +
+  theme_tufte() +
+  #theme(text = element_text(family="robotocondensed")) +
+  theme(legend.position = "bottom",
+        text=element_text(size=12),
+        plot.subtitle = element_text(color = c('black'), hjust = 0.5, size = 12,face = "bold"),
+        axis.text=element_text(size=8),
+        axis.text.x=element_text(angle=45),
+        axis.title=element_text(size=12),
+        axis.title.x = element_blank(),
+        legend.text = element_text(size=14),
+        legend.box = "vertical"
+  ) +
+  labs(x= "Month",
+       y = "Regression Coefficients",
+       subtitle = "Destination Class") +
+  scale_x_date(date_labels = "%b",
+               date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
+               limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
+  )+
+  scale_fill_manual(values = c("#D091BB","#E7F7D5","#D091BB","#B3589A","#9BBF85"))+
+  #scale_color_manual(values = c("darkblue","red"),labels=c("OD coef","Intercept"))+
+  labs(fill="Timeline", colour="")
+png("/Users/Franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/percent/figures/glm-coeff.png",units="in", width=13, height=10, res=300)
+annotate_figure(g, 
+                left = text_grob("Origin Class", 
+                                 face= "bold", 
+                                 color = "black", 
+                                 rot = 90, 
+                                 size = 12,
+                                 family = "serif"))
+dev.off()
+```
+
+##without intercept
+```{r}
+g <- ggplot() +
+  geom_rect(
+    aes(xmin = as.Date(start), xmax = as.Date(end), fill = name), 
+    ymin = -Inf, ymax = Inf, alpha = 0.4, 
+    data = timeline
+  ) +
+  geom_hline( yintercept = 0, linetype = "solid", colour = "gray85", size = 0.5) +
+  geom_line(data = filter(coefficients_OD, color!="red"), 
+            aes(x = monthyear, y = estimate), 
+            colour = "darkblue",
+            size = 1) + 
+  #geom_ribbon(data=filter(coefficients_OD, color!="red"), 
+  #            aes(x = monthyear, ymin=(ci_lower), ymax=(ci_upper)), 
+  #            alpha=0.35, 
+  #            fill="gray36") +
+  #facet_wrap(~ origin_destination_class, nrow = 10) +
+  facet_grid(origin_class ~ destination_class) +
+  theme_tufte() +
+  #theme(text = element_text(family="robotocondensed")) +
+  theme(legend.position = "bottom",
+        text=element_text(size=12),
+        plot.subtitle = element_text(color = c('black'), hjust = 0.5, size = 12,face = "bold"),
+        axis.text=element_text(size=8),
+        axis.text.x=element_text(angle=45),
+        axis.title=element_text(size=12),
+        axis.title.x = element_blank(),
+        legend.text = element_text(size=14),
+        legend.box = "vertical"
+  ) +
+  labs(x= "Month",
+       y = "Regression Coefficients",
+       subtitle = "Destination Class") +
+  scale_x_date(date_labels = "%b",
+               date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
+               limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
+  )+
+  scale_fill_manual(values = c("#D091BB","#E7F7D5","#D091BB","#B3589A","#9BBF85"))+
+  #scale_color_manual(values = c("darkblue","red"),labels=c("OD coef","Intercept"))+
+  labs(fill="Timeline")
+
+png("/Users/Franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/percent/figures/glm-coeff-NI.png",units="in", width=13, height=10, res=300)
+annotate_figure(g, 
+                left = text_grob("Origin Class", 
+                                 face= "bold", 
+                                 color = "black", 
+                                 rot = 90, 
+                                 size = 12,
+                                 family = "serif"))
+dev.off()
+```
+
+## Visualising other co-variates coefficients
+
+```{r}
+coefficients_NOD<-coefficients %>%
+  filter(!grepl("origin_destination",origin_destination_class))
+###production ready viz
+###intercept
+data=coefficients_NOD[coefficients_NOD$origin_destination_class=="(Intercept)",]
+g<-ggplot()+
+  geom_line(data = data, aes(x=monthyear,y=estimate),size = 1)+
+  geom_rect(
+    aes(xmin = as.Date(start), xmax = as.Date(end), fill = name), 
+    ymin = -Inf, ymax = Inf, alpha = 0.6, 
+    data = timeline
+  ) +
+ geom_ribbon(data = data, aes(x=monthyear, ymin=(ci_lower), ymax=(ci_upper)), alpha=0.35, fill="gray36") +
+  scale_x_date(date_labels = "%b",
+               date_breaks = "1 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
+               limits = c(as.Date("2020-03-01"), as.Date("2021-08-01"))
+  )+
+  theme_minimal()+
+  theme(axis.title.x = element_blank(),
+        text=element_text(size=22,family="Times New Roman"), 
+        legend.spacing = unit(2.5, 'in'))+
+  scale_fill_manual(values = c("#D091BB","#E7F7D5","#D091BB","#B3589A","#9BBF85"))+
+  labs(fill="Timeline",y="Coefficient")
+png("/Users/Franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/percent/figures/intercept.png",units="in", width=15, height=5, res=300)
+g
+dev.off()
+
+```
+
+## Getting Predictions
+
+```{r}
+pred_prob<-NULL
+for (i in 1:18){
+  ave_pre_df_temp<-ave_pre_df
+  filename<-paste0("/Users/franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/percent/m_",i,".rds")
+  m<-readRDS(filename)
+  predict<-predict.glm(m, newdata = ave_pre_df, "response", se.fit = TRUE)
+  ave_pre_df_temp<- ave_pre_df_temp %>%
+    mutate(
+      probs=predict$fit,
+      std_error=predict$se.fit,
+      ci_lower = probs - ( 1.96 * std_error ) ,
+      ci_upper = probs + ( 1.96 * std_error ),
+      monthyear=monthyear[i]
+    )
+  
+  pred_prob<-rbind(pred_prob,ave_pre_df_temp[c("origin_destination_class","probs","ci_lower","ci_upper","monthyear")])
+  print(i)
+}
+```
+
+## Visualising outcome variable
+
+```{r}
+#data prep
+pred_prob<-pred_prob %>%
+  separate(origin_destination_class, c("origin_class","destination_class"), sep = "([:])") %>%
+  mutate(
+    origin_destination_class=paste0(origin_class,"_",destination_class),
+    origin_class = ordered(origin_class, 
+                           levels = c("1","2","3","4","5","6","7","8","9","10")),
+    destination_class = ordered(destination_class, 
+                                levels = c("1","2","3","4","5","6","7","8","9","10")
+    ))
+#make plots
+g <- pred_prob %>% 
+  ggplot(., aes(x = monthyear, y = probs, group = origin_destination_class)) +
+  geom_hline( yintercept = 0, linetype = "solid", colour = "gray85", size = 0.5) +
+  geom_vline( xintercept = as.numeric(as.Date("2020-03-23")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-03-08")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-04-12")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-07-19")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_line(colour = "darkblue", size = 1) + 
+  geom_ribbon(aes(ymin=(ci_lower), ymax=(ci_upper)), alpha=0.35, fill="gray36") +
+  #facet_wrap(~ origin_destination_class, nrow = 10) +
+  facet_grid(origin_class ~ destination_class) +
+  theme_tufte() +
+  #theme(text = element_text(family="robotocondensed")) +
+  theme(legend.position = "none",
+        text=element_text(size=12),
+        plot.subtitle = element_text(color = c('black'), hjust = 0.5, size = 12,face = "bold"),
+        axis.text=element_text(size=8),
+        axis.title=element_text(size=12)
+  ) +
+  labs(x= "Month",
+       y = "Regression Probs",
+       subtitle = "Destination Class") +
+  scale_x_date(date_labels = "%b",
+               date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
+               limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
+  )
+png("/Users/Franciscorowe 1/Dropbox/Francisco/Research/in_progress/itinerant/human-mobility/outputs/modelling/percent/figures/glm-linear.png",units="in", width=10, height=10, res=300)
+annotate_figure(g, 
+                left = text_grob("Origin Class", 
+                                 face= "bold", 
+                                 color = "black", 
+                                 rot = 90, 
+                                 size = 12,
+                                 family = "serif"))
+dev.off()
+```
+
+
+
+```{r}
+g1 <- pred_prob %>% 
+  filter(origin_class %in% c(1, 2, 3, 4, 5) & destination_class %in% c(1, 2, 3, 4, 5)) %>%
+  ggplot(., aes(x = monthyear, y = probs, group = origin_destination_class)) +
+  geom_hline( yintercept = 0, linetype = "solid", colour = "gray85", size = 0.5) +
+  geom_vline( xintercept = as.numeric(as.Date("2020-03-23")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-03-08")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-04-12")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-07-19")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_line(colour = "darkblue", size = 1) + 
+  geom_ribbon(aes(ymin=(ci_lower), ymax=(ci_upper)), alpha=0.35, fill="gray36") +
+  #facet_wrap(~ coefficient, nrow = 10) +
+  facet_grid(origin_class ~ destination_class) +
+  theme_tufte() +
+  #theme(text = element_text(family="robotocondensed")) +
+  theme(legend.position = "none",
+        text=element_text(size=12),
+        plot.subtitle = element_text(color = c('black'), hjust = 0.5, size = 12,face = "bold"),
+        axis.text=element_text(size=8),
+        axis.title=element_text(size=12)
+  ) +
+  labs(x= "Month",
+       y = "Regression Probs",
+       subtitle = "Destination Class") +
+  scale_x_date(date_labels = "%b",
+               date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
+               limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
+  )
+png("~/glm-probs_class_o1-5_d1-5.png",units="in", width=10, height=10, res=300)
+annotate_figure(g1, 
+                left = text_grob("Origin Class", 
+                                 face= "bold", 
+                                 color = "black", 
+                                 rot = 90, 
+                                 size = 12,
+                                 family = "serif"))
+dev.off()
+g2 <- pred_prob %>% 
+  filter(origin_class %in% c(1, 2, 3, 4, 5) & destination_class %in% c(6, 7, 8, 9, 10)) %>%
+  ggplot(., aes(x = monthyear, y = probs, group = origin_destination_class)) +
+  geom_hline( yintercept = 0, linetype = "solid", colour = "gray85", size = 0.5) +
+  geom_vline( xintercept = as.numeric(as.Date("2020-03-23")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-03-08")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-04-12")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-07-19")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_line(colour = "darkblue", size = 1) + 
+  geom_ribbon(aes(ymin=(ci_lower), ymax=(ci_upper)), alpha=0.35, fill="gray36") +
+  facet_grid(origin_class ~ destination_class) +
+  theme_tufte() +
+  #theme(text = element_text(family="robotocondensed")) +
+  theme(legend.position = "none",
+        text=element_text(size=12),
+        plot.subtitle = element_text(color = c('black'), hjust = 0.5, size = 12,face = "bold"),
+        axis.text=element_text(size=8),
+        axis.title=element_text(size=12)
+  ) +
+  labs(x= "Month",
+       y = "Regression Probs",
+       subtitle = "Destination Class") +
+  scale_x_date(date_labels = "%b",
+               date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
+               limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
+  )
+png("~/glm-probs_class_o1-5_d6-10.png",units="in", width=10, height=10, res=300)
+annotate_figure(g2, 
+                left = text_grob("Origin Class", 
+                                 face= "bold", 
+                                 color = "black", 
+                                 rot = 90, 
+                                 size = 12,
+                                 family = "serif"))
+dev.off()
+g3 <- pred_prob %>% 
+  filter(origin_class %in% c(6, 7, 8, 9, 10) & destination_class %in% c(1, 2, 3, 4, 5)) %>%
+  ggplot(., aes(x = monthyear, y = probs, group = origin_destination_class)) +
+  geom_hline( yintercept = 0, linetype = "solid", colour = "gray85", size = 0.5) +
+  geom_vline( xintercept = as.numeric(as.Date("2020-03-23")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-03-08")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-04-12")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-07-19")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_line(colour = "darkblue", size = 1) + 
+  geom_ribbon(aes(ymin=(ci_lower), ymax=(ci_upper)), alpha=0.35, fill="gray36") +
+  facet_grid(origin_class ~ destination_class) +
+  theme_tufte() +
+  #theme(text = element_text(family="robotocondensed")) +
+  theme(legend.position = "none",
+        text=element_text(size=12),
+        plot.subtitle = element_text(color = c('black'), hjust = 0.5, size = 12,face = "bold"),
+        axis.text=element_text(size=8),
+        axis.title=element_text(size=12)
+  ) +
+  labs(x= "Month",
+       y = "Regression Probs",
+       subtitle = "Destination Class") +
+  scale_x_date(date_labels = "%b",
+               date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
+               limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
+  )
+png("~/glm-probs_class_o6-10_d1-5.png",units="in", width=10, height=10, res=300)
+annotate_figure(g3, 
+                left = text_grob("Origin Class", 
+                                 face= "bold", 
+                                 color = "black", 
+                                 rot = 90, 
+                                 size = 12,
+                                 family = "serif"))
+dev.off()
+g4 <- pred_prob %>% 
+  filter(origin_class %in% c(6, 7, 8, 9, 10) & destination_class %in% c(6, 7, 8, 9, 10)) %>%
+  ggplot(., aes(x = monthyear, y = probs, group = origin_destination_class)) +
+  geom_hline( yintercept = 0, linetype = "solid", colour = "gray85", size = 0.5) +
+  geom_vline( xintercept = as.numeric(as.Date("2020-03-23")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-03-08")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-04-12")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_vline( xintercept = as.numeric(as.Date("2021-07-19")), linetype = "solid", colour = "gray85", size = 0.2) +
+  geom_line(colour = "darkblue", size = 1) + 
+  geom_ribbon(aes(ymin=(ci_lower), ymax=(ci_upper)), alpha=0.35, fill="gray36") +
+  #facet_wrap(~ coefficient, nrow = 10) +
+  facet_grid(origin_class ~ destination_class) +
+  theme_tufte() +
+  #theme(text = element_text(family="robotocondensed")) +
+  theme(legend.position = "none",
+        text=element_text(size=12),
+        plot.subtitle = element_text(color = c('black'), hjust = 0.5, size = 12,face = "bold"),
+        axis.text=element_text(size=8),
+        axis.title=element_text(size=12)
+  ) +
+  labs(x= "Month",
+       y = "Regression Probs",
+       subtitle = "Destination Class") +
+  scale_x_date(date_labels = "%b",
+               date_breaks = "3 months", #breaks = c("Mar", "Jun", "Sep", "Dec"),
+               limits = c(as.Date("2020-01-01"), as.Date("2021-08-01"))
+  )
+png("~/glm-probs_class_o6-10_d6-10.png",units="in", width=10, height=10, res=300)
+annotate_figure(g4, 
+                left = text_grob("Origin Class", 
+                                 face= "bold", 
+                                 color = "black", 
+                                 rot = 90, 
+                                 size = 12,
+                                 family = "serif"))
+dev.off()
+```

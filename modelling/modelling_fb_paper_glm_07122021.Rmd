@@ -1,0 +1,236 @@
+---
+title: "Regression Modelling Using Facebook Data"
+subtitle: "Generalised Linear Model (GLM)"
+author: Francisco Rowe
+output: html_notebook
+---
+
+Dependencies
+```{r, message=FALSE, warning=FALSE}
+#data wrangling
+library(multidplyr) 
+library(tidyverse) 
+library(dplyr) 
+# estimating mixed effects models 
+library(lme4) 
+library(merTools) 
+#library(glmmTMB) 
+#library(nlme)
+#library(rstanarm)
+# data visualisation 
+library(viridis)
+library(viridisLite)
+library(ggthemes)
+library(ggpubr)
+  # reporting regression results
+library(broom)
+library(broom.mixed)
+library(gtsummary)
+library(sjPlot)
+```
+
+
+# Data
+A cross-section should provide a max set of 6080 * 6079 pairs of origin-destination, including intra-mobility
+```{r}
+rm(list=ls())
+cluster <- new_cluster(26)
+df <- readRDS("/Volumes/ITINERANT/pre-processed-movements/modelling/full_period_mov_pop.rds") %>% 
+  filter(date < "2020-4-30")
+
+# id for unique tiles
+origin <- as.data.frame(unique(df$start_polygon_name)) 
+destination <- as.data.frame(unique(df$end_polygon_name))
+
+str(df)
+```
+
+# Data Wrangling
+
+Proportion of people moving
+```{r}
+df <- df %>% mutate(
+  mov_prop = n_crisis / start_pop
+) %>% 
+  filter(mov_prop <= 1)
+  
+```
+
+
+Creating area class interaction variable
+```{r}
+df <-  df %>% mutate(
+origin_jenks = ordered(origin_jenks, 
+                      levels = c("1","2","3","4","5","6","7","8","9","10")),
+destination_jenks = ordered(destination_jenks, 
+                           levels = c("1","2","3","4","5","6","7","8","9","10")),
+wd = factor(wd,
+            levels = c("Weekday", "Weekend"))
+)
+
+df$origin_destination_class <- fct_cross(df$origin_jenks, df$destination_jenks)
+df$day <- as.numeric(ordered(df$date))
+df$month <- lubridate::month(lubridate::ymd(df$date), label=TRUE) 
+month <- unique(df$month)
+```
+
+Standardising covariates
+```{r}
+df$z_origin_pop <- (df$origin_res_pop - mean(df$origin_res_pop)) / sd(df$origin_res_pop)
+df$z_destination_pop <- (df$destination_res_pop - mean(df$destination_res_pop)) / sd(df$destination_res_pop)
+df$z_d <- (df$length_km - mean(df$length_km)) / sd(df$length_km)
+```
+
+```{r}
+df <- df %>%
+  group_by(month)
+
+## Partition into smaller datasets
+by_month <- df  %>% 
+  partition(cluster)
+```
+
+# Modelling 
+
+Model 1
+```{r}
+eq <- mov_prop ~ 
+ z_d + origin_destination_class + # pair part 
+ z_origin_pop + # origin part
+ z_destination_pop + # destination_part 
+ day + hour + wd # time part
+```
+
+
+```{r}
+system.time({
+
+  models <- by_month %>% 
+    do(model = glm(mov_prop ~ z_d + origin_destination_class + z_origin_pop + z_destination_pop + day + hour + wd, data = ., family = binomial("logit"), weights = start_pop))
+
+})
+
+
+```
+
+```{r}
+final <- models %>% 
+  collect()
+```
+
+
+### Extracting outputs
+```{r}
+
+# extracting coefficients
+coefficients_df <- map_df(final$model, coefficients)
+
+# extracting standard errors
+se_df <- map(final$model, summary) %>% 
+  map(., coef) %>% 
+  map_df(., ~.[,"Std. Error"])
+
+# adding month names
+#month <- c("march", "april")
+
+# reshaping to long format
+coef_long_df <- cbind(month, coefficients_df) %>% 
+  pivot_longer(
+    cols = "(Intercept)":"wdWeekend", 
+  names_to = "coefficient", 
+  values_to = "estimate"
+  )
+
+# reshaping to long format
+se_long_df <- cbind(month, se_df) %>% pivot_longer(
+  cols = "(Intercept)":"wdWeekend", 
+  names_to = "coefficient",
+  values_to = "std_error"
+  )
+
+# creating a single df
+long_df <- full_join(coef_long_df, 
+                     se_long_df, 
+                     by = c("coefficient" = "coefficient", 
+                            "month" = "month") 
+                     )
+
+# computing 95% confidence intervals
+long_df <- long_df %>% mutate(
+  ci_lower = estimate - ( 1.96 * std_error ) ,
+  ci_upper = estimate + ( 1.96 * std_error )
+)
+```
+
+# Displaying the results
+
+Creating origin and destination ids
+```{r}
+long_df <- long_df %>% mutate(
+  origin_class = substr(long_df$coefficient, 25, 26) %>% 
+    gsub(":", "", .),
+  destination_class = substr(long_df$coefficient, 27, 28) %>% 
+    gsub(":", "", .),
+)
+
+long_df$origin_class[long_df$coefficient == "origin_destination_class10:10"] = "10"
+long_df$destination_class[long_df$coefficient == "origin_destination_class10:10"] = "10"
+
+long_df <-  long_df %>% mutate(
+ origin_class = ordered(origin_class, 
+                      levels = c("1","2","3","4","5","6","7","8","9","10", "")),
+ destination_class = ordered(destination_class, 
+                           levels = c("1","2","3","4","5","6","7","8","9","10", ""))
+)
+
+
+
+```
+
+
+
+Plotting
+
+```{r}
+g <- long_df %>% dplyr::filter(grepl("origin_destination_class", coefficient)) %>% 
+ggplot(., aes(x = month, y = estimate, group = coefficient)) +
+  geom_line(colour = "darkblue") + 
+  geom_ribbon(aes(ymin=(ci_lower), ymax=(ci_upper)), alpha=0.35, fill="gray36") +
+  #facet_wrap(~ coefficient, nrow = 10) +
+  facet_grid(origin_class ~ destination_class) +
+  theme_tufte() +
+  #theme(text = element_text(family="robotocondensed")) +
+  theme(legend.position = "none",
+        text=element_text(size=12),
+        plot.subtitle = element_text(color = c('black'), hjust = 0.5, size = 12,face = "bold"),
+        axis.text=element_text(size=8),
+        axis.title=element_text(size=12)
+        ) +
+  labs(x= "Month",
+       y = "Regression Coefficient",
+       subtitle = "Destination Class") +
+    scale_x_discrete(labels = abbreviate,
+                   breaks = c("Mar", "Jun", "Sep", "Dec"))
+
+png("/home/fcorowe/itinerant/human-mobility/outputs/reg_coeff.png",units="in", width=10, height=10, res=300)
+annotate_figure(g, 
+                left = text_grob("Origin Class", 
+                                 face= "bold", 
+                                 color = "black", 
+                                 rot = 90, 
+                                 size = 12,
+                                 family = "serif"))
+dev.off()
+```
+
+Checking
+```{r}
+#summary(results_model <- final$model[[1]])
+coeff <- final$model[[1]]$coefficients
+se <- coef(summary(final$model[[3]]))[,"Std. Error"]
+
+```
+
+
+
+

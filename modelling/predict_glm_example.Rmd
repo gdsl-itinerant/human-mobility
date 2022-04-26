@@ -1,0 +1,144 @@
+---
+title: "GLM Modelling Predictions Using Facebook Data"
+subtitle: " "
+author: Francisco Rowe
+output: html_notebook
+---
+
+Dependencies
+```{r, message=FALSE, warning=FALSE}
+#data wrangling
+library(multidplyr) 
+library(tidyverse) 
+library(dplyr) 
+# estimating mixed effects models 
+library(lme4) 
+library(merTools) 
+library(Hmisc)
+#library(glmmTMB) 
+#library(nlme)
+#library(rstanarm)
+# data visualisation 
+library(viridis)
+library(viridisLite)
+library(ggthemes)
+library(ggpubr)
+  # reporting regression results
+library(broom)
+library(broom.mixed)
+library(gtsummary)
+library(sjPlot)
+
+library(aod) # example data from ucla
+```
+
+Options for predicted prob:
+- Manually use: 
+  > prob_od = invlogit(-3.98998 + 0.00226 * 588 + 0.80404 * 3.39 + -0.67544 * 1)
+- Automatically: 
+  > 1) generate a data frame with the values of the covariates to be used for prediction eg. means
+  > 2) use `predict` or `predict.glm`
+
+```{r}
+rm(list=ls())
+mydata <- read.csv("https://stats.idre.ucla.edu/stat/data/binary.csv")
+## view the first few rows of the data
+head(mydata)
+```
+
+```{r}
+summary(mydata)
+```
+
+```{r}
+sapply(mydata, sd)
+```
+
+```{r}
+mydata$rank <- factor(mydata$rank)
+mylogit <- glm(admit ~ gre + gpa + rank, data = mydata, family = "binomial")
+summary(mylogit)
+```
+
+```{r}
+newdata1 <- with(mydata, data.frame(gre = mean(gre), gpa = mean(gpa), rank = factor(1:4)))
+## view data frame
+newdata1
+```
+
+```{r}
+newdata1$rankP <- predict(mylogit, newdata = newdata1, type = "response")
+newdata1
+```
+
+Checking
+```{r}
+b <- coef(mylogit)
+p1 <- invlogit(b[1] + b[2] * 587.7 + b[3] * 3.3899 + b[4] * 0)
+p2 <- invlogit(b[1] + b[2] * 587.7 + b[3] * 3.3899 + b[4] * 1)
+p3 <- invlogit(b[1] + b[2] * 587.7 + b[3] * 3.3899 + b[5] * 1)
+p4 <- invlogit(b[1] + b[2] * 587.7 + b[3] * 3.3899 + b[6] * 1)
+prob <- rbind(p1, p2, p3, p4)
+prob
+```
+
+
+# Using multidplyr
+
+```{r}
+mydata <- mydata %>% mutate(
+    class = log(gre) %>%
+      Hmisc::cut2( g = 4)
+    )
+
+```
+
+```{r}
+cluster <- new_cluster(6)
+```
+
+```{r}
+mydata <- mydata %>%
+  group_by(class)
+
+## Partition into smaller datasets
+by_class <- mydata  %>% 
+  partition(cluster)
+```
+```{r}
+system.time({
+
+  models <- by_class %>% 
+    do(model = glm(admit ~ gre + gpa + rank, data = ., family = binomial("logit")))
+
+})
+
+```
+
+```{r}
+system.time({
+  
+final <- models %>% 
+  collect()
+
+})
+```
+
+```{r}
+probs <- NULL
+
+for (i in 1:length(final$model)){
+  newdata1$probs <- predict(final$model[[i]], newdata = newdata1, "response")
+  newdata1$class <- i
+  prob_df <- rbind(prob_df, newdata1[c("rank", "probs", "class")])
+}
+
+```
+
+
+
+
+
+
+
+
