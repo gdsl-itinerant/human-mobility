@@ -5,8 +5,8 @@
 `](https://twitter.com/darribas)]<sup>1,2</sup>, Krasen Samardzhiev<sup>1</sup>, Martin Fleischmann[[`@martinfleis`
 ](https://twitter.com/martinfleis)]<sup>1</sup>
 
-<sup>1</sup> *Geographic Data Science Lab, University of Liverpool, Liverpool, United Kingdom*
-<sup>2</sup> *The Alan Turing Institute, British Library, 96 Euston Road, London, England, NW1 2DB, United Kingdom*
+<sup>1</sup> *Geographic Data Science Lab, University of Liverpool, Liverpool, United Kingdom*. 
+<sup>2</sup> *The Alan Turing Institute, British Library, 96 Euston Road, London, England, NW1 2DB, United Kingdom*. 
 
 This repository stores the required code to replicate the results of the following article:
 
