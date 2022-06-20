@@ -19,4 +19,4 @@ This paper aims to analyse the extent and durability of changes in human mobilit
 * What have been the key interactions between places across the population density hierarchy? Have people mainly moved to sparely populated areas?  
 * To what extent the intensity of population movement from cities have been sustained throughout the pandemic? Have the observed changes been temporary, or are likely to persist post pandemic?
 
-![](outputs/coefficients_freedom.png)
+![](outputs/modelling/coefficients_freedom.png)
