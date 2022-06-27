@@ -36,7 +36,7 @@ grid<-st_read("~/itinerant/grid_final/FBgridPop.gpkg")
 
 grid<-grid %>%
   mutate(area=sf::st_area(grid),
-         pop_density=(Population/as.numeric(area))*100000,
+         pop_density=(Population/as.numeric(area))*10000,
          log_pop=log(Population+0.001)) #hectars
 
 grid %>%
@@ -92,6 +92,8 @@ grid<-grid %>%
 
 grid$class<-factor(grid$class,levels = c("1","2","3","4","5","6","7","8","9","10"))
 
+grid$decile<-factor(grid$decile,levels = c("1","2","3","4","5","6","7","8","9","10"))
+
 grid$jenks<-factor(grid$jenks,levels = c("1","2","3","4","5","6","7","8","9","10"))
 
 
@@ -113,21 +115,66 @@ ggplot()+
 
 ggsave(paste0("~/itinerant/img/log_pop_jenks.jpeg"),dpi = 1200)
 
+st_write(grid,"~/grid_w_classes.gpkg")
+```
+
+## Visualise decile and class pop density variations
+
+```{r}
+theme_tufte2 <- function(...) {
+theme_tufte() +
+theme(
+text = element_text(family = "robotocondensed")
+)
+}
+
+# load font
+font_add_google("Roboto Condensed", "robotocondensed")
+# automatically use showtext to render text
+
 ##boxplot
 
 grid %>% 
   st_drop_geometry()%>%
-  select(pop_density,decile,jenks,class) %>%
+  select(pop_density,decile,class) %>%
   tidyr::pivot_longer(-c(pop_density),names_to = "type",values_to = "class") %>%
   ggplot(aes(x=class,y=pop_density))+
-  geom_boxplot(width=0.15,outlier.shape = NA)+
+  geom_violin(width=0.15,outlier.shape = NA)+
   coord_cartesian(ylim =  c(0, 500))+
   theme_bw()+
   facet_wrap(~type)
 
 ggsave(paste0("~/itinerant/img/boxplot_classes.jpeg"),dpi = 600)
 
-st_write(grid,"~/grid_w_classes.gpkg")
-``
+#data-prep
+
+grid_viz<-grid %>% 
+  st_drop_geometry()%>%
+  select(pop_density,decile,class) %>%
+  tidyr::pivot_longer(-c(pop_density),names_to = "type",values_to = "class") %>%
+  mutate(
+    type=factor(type,levels = c("decile","class"),labels = c("Decile", "Adj. Decile"))
+  )
+
+ggplot(data = grid_viz, aes(x=class,y=pop_density,fill=class,colour=class)) +
+              scale_fill_viridis_d( option = "D") +
+              #scale_color_viridis_d( option = "D") +
+              coord_cartesian(ylim =  c(0, 50))+
+              #geom_violin(alpha=0.4, size = 0.5) +
+              geom_boxplot(notch = F, outlier.size = -1, width = 0.5, alpha = 0.5, color="gray",size=0.2) +
+              geom_point(shape = 21, size = 0.2, alpha = 0.5,color="black") +
+              theme_tufte() +
+              theme(legend.position = "none",
+              axis.text = element_text(size = 16),
+              axis.title=element_text(size=18),
+              strip.text = element_text(size=18)
+              ) +
+              labs(y="Persons per hectare",x="Population Density Class")+
+  facet_wrap(~type)
+
+ggsave("~/itinerant/img/class_analysis/pop_classes.jpg",height=15, width=30, units="cm",bg="white",dpi=300)
+```
+
+
 
 
